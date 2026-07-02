@@ -24,6 +24,18 @@ Every analysis is wrapped in guardrails so beginners don't misuse a test:
   rank-biserial r, Cramér's V) — because significance is not the same as size.
 - Two worked demo datasets (a clinical/experiment set and an ecology community
   matrix) so students can explore with zero setup.
+- **Paste-in data** — drop tab/comma/semicolon-separated data straight from
+  Excel; the delimiter is auto-detected.
+- **Transform / Standardize** tab that inspects the selected columns and
+  *recommends* an appropriate transformation (z-score for mismatched scales,
+  log/sqrt for skew, Hellinger/relative for community counts) before applying
+  z-score, log(x+1), square-root, range 0-1, Hellinger, relative, or
+  presence-absence. Results become new columns available everywhere.
+- **Compare Methods** tab to put analyses side by side: PCA vs PCoA vs NMDS on
+  one matrix (3-panel figure plus a Procrustes correlation and NMDS stress
+  quantifying how much method choice matters), parametric vs non-parametric
+  group tests (p-values and effect sizes together), and Pearson vs Spearman
+  correlation.
 
 ## Analyses
 
@@ -51,7 +63,7 @@ regression.
 
 **Ecology** — diversity indices (richness, Shannon, Simpson, inverse Simpson,
 Pielou evenness), community comparison (PERMANOVA, ANOSIM, Mantel), and
-ordination (PCA, CA, DCA, NMDS, RDA).
+ordination (PCA, PCoA, CA, DCA, NMDS, RDA).
 
 **Power** — power / sample-size solving for t-tests, ANOVA, two proportions, and
 correlation, with a power-vs-n curve and effect-size conventions.
@@ -76,16 +88,24 @@ All figures pass through a single `theme_publication()` and export at 300 dpi:
 
 ```r
 install.packages(c("shiny", "DT", "ggplot2", "dplyr", "tidyr", "scales",
-                   "moments", "car", "coin", "FSA", "ppcor", "vegan",
-                   "FactoMineR", "ade4", "survival", "pwr", "ggsignif", "readxl"))
+                   "moments", "car", "FSA", "ppcor", "vegan", "survival",
+                   "pwr", "ggsignif", "patchwork", "readxl"))
 shiny::runApp("app.R")
 ```
 
 Core operation needs only `shiny`, `DT`, `ggplot2`, `dplyr`, `tidyr`, `scales`.
 Every other package unlocks a specific feature (ordination, survival, power,
-Dunn post-hoc, partial correlation, Excel import, significance brackets) and is
-checked at runtime — a missing package degrades that one feature with an
-on-screen note rather than crashing the app.
+Dunn post-hoc, partial correlation, multi-panel comparison figures, Excel
+import, significance brackets) and is checked at runtime — a missing package
+degrades that one feature with an on-screen note rather than crashing the app.
+
+This app has been executed and tested end-to-end on R 4.3.3: every module's
+outputs and figures were driven with both demo datasets via `shiny::testServer`
+and confirmed to run without error, and the app boots as a live server. To run
+it yourself, install the packages above (on Debian/Ubuntu, precompiled binaries
+from the Posit Public Package Manager avoid slow compilation) and launch. For
+the Georgia typeface, ensure it is installed on your system; otherwise the
+theme falls back to the default serif.
 
 ## Package citations
 

@@ -20,6 +20,7 @@
 #   survival     - Therneau TM. A Package for Survival Analysis in R.
 #   pwr          - Champely S. Basic Functions for Power Analysis.
 #   ggsignif     - Ahlmann-Eltze C, Patil I. Significance brackets for ggplot2.
+#   patchwork    - Pedersen TL. The Composer of Plots (multi-panel figures).
 #   scales       - Wickham H, Seidel D. Scale functions for visualization.
 #   readxl       - Wickham H, Bryan J. Read Excel files.
 
@@ -79,9 +80,12 @@ theme_publication <- function(base_size = 13, base_family = PUB_FONT) {
     )
 }
 
+# Discrete groups take the exact Wong colours in order (blue, orange, amber,
+# green, ...); a ramp only supplies extras beyond the eight base hues.
+pub_discrete <- c(unname(wong_palette), colorRampPalette(wong_palette)(64))
 pub_colour <- function(name = NULL) {
-  list(scale_colour_manual(values = wong_values(64), na.value = "grey40", name = name),
-       scale_fill_manual(values = wong_values(64), na.value = "grey40", name = name))
+  list(scale_colour_manual(values = pub_discrete, na.value = "grey40", name = name),
+       scale_fill_manual(values = pub_discrete, na.value = "grey40", name = name))
 }
 
 # Unlabelled ticks on the top and right spines so all four sides carry ticks.
@@ -208,6 +212,44 @@ summary_table <- function(df, vars) {
   out
 }
 
+# Standardization / transformation of a numeric matrix.
+apply_transform <- function(m, method) {
+  m <- as.matrix(m)
+  out <- switch(method,
+    z    = scale(m),
+    log1p = log1p(m),
+    sqrt = sqrt(m),
+    range = apply(m, 2, function(x) { r <- range(x, na.rm = TRUE)
+              if (diff(r) == 0) x * 0 else (x - r[1]) / diff(r) }),
+    hellinger = if (has_pkg("vegan")) as.matrix(vegan::decostand(m, "hellinger")) else sqrt(m / rowSums(m)),
+    total = m / rowSums(m),
+    pa   = (m > 0) * 1)
+  as.data.frame(out)
+}
+
+# Inspect a numeric block and recommend an appropriate transformation.
+transform_reco <- function(m) {
+  m <- m[stats::complete.cases(m), , drop = FALSE]
+  neg <- any(m < 0)
+  ints <- mean(vapply(m, function(x) all(x == round(x), na.rm = TRUE), logical(1)))
+  zeros <- mean(as.matrix(m) == 0, na.rm = TRUE)
+  sds <- vapply(m, stats::sd, numeric(1)); sds <- sds[sds > 0]
+  scale_gap <- if (length(sds) > 1) max(sds) / min(sds) else 1
+  skew <- if (has_pkg("moments"))
+    mean(abs(vapply(m, function(x) moments::skewness(stats::na.omit(x)), numeric(1))), na.rm = TRUE) else NA
+  community <- !neg && ints > 0.7 && zeros > 0.2 && ncol(m) >= 3
+  msgs <- list()
+  if (community)
+    msgs <- c(msgs, list(list(txt = "These look like <b>community / abundance counts</b> (non-negative, many zeros). Before PCA/RDA use the <b>Hellinger</b> transform; for NMDS/PERMANOVA a Bray-Curtis distance already handles scale, so raw or <b>total</b> (relative) values are fine.", sev = "info")))
+  if (!is.na(skew) && skew > 1 && !neg)
+    msgs <- c(msgs, list(list(txt = sprintf("Mean absolute skewness is %.1f (right-skewed). A <b>log (x+1)</b> or <b>square-root</b> transform will pull in the tail and stabilise variance.", skew), sev = "warn")))
+  if (scale_gap > 5 && !community)
+    msgs <- c(msgs, list(list(txt = sprintf("Your variables differ ~%.0f-fold in spread. For PCA, clustering, or distance-based methods, <b>z-score</b> them so large-range variables don't dominate.", scale_gap), sev = "warn")))
+  if (!length(msgs))
+    msgs <- list(list(txt = "No transformation looks necessary: variables are on comparable scales and not strongly skewed. Standardize only if a specific method requires it.", sev = "ok"))
+  msgs
+}
+
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
@@ -233,6 +275,11 @@ ui <- navbarPage(
                   accept = c(".csv", ".txt", ".tsv", ".xls", ".xlsx")),
         checkboxInput("header", "First row is a header", TRUE),
         radioButtons("sep", "Delimiter", c(Comma = ",", Tab = "\t", Semicolon = ";"), inline = TRUE),
+        tags$hr(),
+        strong("...or paste data"),
+        textAreaInput("paste_text", NULL, rows = 5,
+                      placeholder = "Paste tab-, comma-, or semicolon-separated data with a header row (e.g. straight from Excel)."),
+        actionButton("paste_go", "Use pasted data", class = "btn-success btn-block"),
         tags$hr(),
         strong("No data yet? Try a worked example:"),
         actionButton("demo_exp", "Experiment / clinical demo", class = "btn-primary btn-block"),
@@ -273,6 +320,24 @@ ui <- navbarPage(
         mainPanel(width = 9,
           h4("Normality assessment"), uiOutput("norm_notes"), DTOutput("norm_tbl"),
           tags$hr(), plotOutput("dist_plot", height = "460px"))
+      )
+    ),
+    tabPanel("Transform / Standardize",
+      sidebarLayout(
+        sidebarPanel(width = 3,
+          uiOutput("tr_vars_ui"),
+          selectInput("tr_method", "Transformation",
+            c("Z-score (center & scale)" = "z", "Log (x + 1)" = "log1p",
+              "Square root" = "sqrt", "Range 0-1" = "range",
+              "Hellinger (community)" = "hellinger", "Total / relative" = "total",
+              "Presence-absence" = "pa")),
+          radioButtons("tr_out", "Write result as",
+                       c("New columns (keep originals)" = "add", "Replace originals" = "replace"), inline = FALSE),
+          actionButton("tr_apply", "Apply transformation", class = "btn-primary btn-block"),
+          sidebar_help("Transformed columns become available to every other tab.")),
+        mainPanel(width = 9,
+          h4("Recommendation for your data"), uiOutput("tr_reco"),
+          h4("Preview"), DTOutput("tr_preview"))
       )
     )
   ),
@@ -506,7 +571,7 @@ ui <- navbarPage(
       sidebarLayout(
         sidebarPanel(width = 3,
           selectInput("ord_method", "Method",
-            c("PCA" = "pca", "Correspondence Analysis" = "ca",
+            c("PCA" = "pca", "PCoA (metric MDS)" = "pcoa", "Correspondence Analysis" = "ca",
               "Detrended CA" = "dca", "NMDS" = "nmds", "Redundancy Analysis" = "rda")),
           uiOutput("ord_vars_ui"), uiOutput("ord_group_ui"), uiOutput("ord_constrain_ui"),
           selectInput("nmds_dist", "NMDS distance", c("bray", "euclidean", "jaccard", "gower")),
@@ -516,6 +581,32 @@ ui <- navbarPage(
           h4("Ordination summary"), uiOutput("ord_notes"), verbatimTextOutput("ord_summary"),
           tags$hr(), plotOutput("ord_plot", height = "540px"))
       )
+    )
+  ),
+
+  # --- Compare methods ----------------------------------------------------
+  tabPanel("Compare Methods",
+    sidebarLayout(
+      sidebarPanel(width = 3,
+        selectInput("cmp_type", "What to compare",
+          c("Ordinations: PCA vs PCoA vs NMDS" = "ord",
+            "Group test: parametric vs non-parametric" = "grp",
+            "Correlation: Pearson vs Spearman" = "cor")),
+        conditionalPanel("input.cmp_type == 'ord'",
+          uiOutput("cmp_ord_vars_ui"),
+          selectInput("cmp_ord_group", "Grouping (colour)", choices = c("None" = "")),
+          selectInput("cmp_dist", "Distance (PCoA / NMDS)", c("bray", "euclidean", "jaccard", "gower"))),
+        conditionalPanel("input.cmp_type == 'grp'",
+          selectInput("cmp_y", "Response (numeric)", choices = NULL),
+          selectInput("cmp_g", "Grouping factor", choices = NULL)),
+        conditionalPanel("input.cmp_type == 'cor'",
+          selectInput("cmp_x1", "Variable 1", choices = NULL),
+          selectInput("cmp_x2", "Variable 2", choices = NULL)),
+        downloadButton("dl_cmp", "Download figure (300 dpi)")),
+      mainPanel(width = 9,
+        h4("How the methods compare"), uiOutput("cmp_notes"),
+        DTOutput("cmp_tbl"),
+        tags$hr(), plotOutput("cmp_plot", height = "520px"))
     )
   ),
 
@@ -558,6 +649,18 @@ server <- function(input, output, session) {
     }, error = function(e) { showNotification(paste("Read error:", conditionMessage(e)),
                                               type = "error"); NULL })
     rv$data <- df
+  })
+
+  observeEvent(input$paste_go, {
+    req(nzchar(input$paste_text %||% ""))
+    txt <- input$paste_text
+    sep <- if (grepl("\t", txt)) "\t" else if (grepl(";", txt)) ";" else ","
+    df <- tryCatch(utils::read.table(text = txt, header = TRUE, sep = sep,
+                                     stringsAsFactors = FALSE, check.names = TRUE, fill = TRUE),
+                   error = function(e) { showNotification(paste("Parse error:", conditionMessage(e)),
+                                                          type = "error"); NULL })
+    if (!is.null(df) && ncol(df) >= 1) { rv$data <- df
+      showNotification(sprintf("Loaded %d rows x %d columns from pasted text.", nrow(df), ncol(df)), type = "message") }
   })
 
   observeEvent(input$demo_exp, {
@@ -617,6 +720,9 @@ server <- function(input, output, session) {
     upd("surv_group", c("None" = "", fv))
     upd("div_group", c("None" = "", fv)); upd("beta_group", fv, fv[1])
     upd("ord_group", c("None" = "", fv))
+    upd("cmp_ord_group", c("None" = "", fv))
+    upd("cmp_y", nv, nv[1]); upd("cmp_g", fv, fv[1])
+    upd("cmp_x1", nv, nv[1]); upd("cmp_x2", nv, nv[2] %||% nv[1])
   })
 
   # --- Data health --------------------------------------------------------
@@ -726,6 +832,30 @@ server <- function(input, output, session) {
   output$dl_dist <- downloadHandler(function() paste0("distribution_", input$dist_var, ".png"),
                                     function(f) save_publication(dist_plot(), f))
 
+  # --- Transform / standardize -------------------------------------------
+  output$tr_vars_ui <- renderUI(checkboxGroupInput("tr_vars", "Columns to transform",
+                                  choices = numeric_vars(), selected = numeric_vars()))
+  tr_matrix <- reactive({ req(input$tr_vars)
+    m <- rv$data[, input$tr_vars, drop = FALSE]; m[vapply(m, is.numeric, logical(1))] })
+  output$tr_reco <- renderUI({ m <- tr_matrix(); req(ncol(m) >= 1)
+    neg <- any(m < 0, na.rm = TRUE)
+    warn <- if (input$tr_method %in% c("log1p", "sqrt", "hellinger", "total", "pa") && neg)
+      note("Some selected values are negative, which is invalid for log/sqrt/community transforms. Z-score or range 0-1 instead.", "bad") else NULL
+    tagList(lapply(transform_reco(m), function(x) note(x$txt, x$sev)), warn) })
+  output$tr_preview <- renderDT({ m <- tr_matrix(); req(ncol(m) >= 1)
+    tr <- tryCatch(apply_transform(m, input$tr_method), error = function(e) NULL)
+    if (is.null(tr)) return(datatable(data.frame(Message = "Transformation not valid for these columns.")))
+    names(tr) <- paste0(names(m), "_", input$tr_method)
+    datatable(round(head(tr, 12), 4), options = list(scrollX = TRUE, dom = "t")) })
+  observeEvent(input$tr_apply, { req(input$tr_vars)
+    m <- tr_matrix(); tr <- tryCatch(apply_transform(m, input$tr_method), error = function(e) NULL)
+    if (is.null(tr)) { showNotification("Transformation invalid for these columns.", type = "error"); return() }
+    df <- rv$data
+    if (input$tr_out == "replace") { df[input$tr_vars] <- tr }
+    else { newnames <- paste0(input$tr_vars, "_", input$tr_method); df[newnames] <- tr }
+    rv$data <- df
+    showNotification(sprintf("Applied %s transformation to %d column(s).", input$tr_method, ncol(m)), type = "message") })
+
   # --- Choose a test ------------------------------------------------------
   output$guide_out <- renderUI({
     resp <- input$guide_response; pred <- input$guide_predictor; paired <- input$guide_paired == "paired"
@@ -833,13 +963,17 @@ server <- function(input, output, session) {
     tagList(note(ip$txt, ip$sev), note(es, "info")) })
 
   gc_plot <- reactive({ d <- gc_data(); req(nrow(d) > 0)
+    # Reserve labelled headroom for the significance bracket so it isn't clipped.
+    yvals <- d$y
+    if (isTRUE(input$gc_signif) && nlevels(d$g) == 2)
+      yvals <- c(yvals, max(d$y) + 0.16 * diff(range(d$y)))
     p <- ggplot(d, aes(g, y, fill = g)) +
       geom_boxplot(outlier.shape = NA, width = 0.55, colour = "black", linewidth = pt_to_mm(1.0), alpha = 0.35) +
       geom_jitter(aes(colour = g), width = 0.12, height = 0, size = 1.8, alpha = 0.8, show.legend = FALSE) +
       stat_summary(fun = mean, geom = "point", shape = 23, size = 3.4, fill = "white",
                    colour = "black", stroke = pt_to_mm(1.0)) +
       labs(x = input$gc_group, y = input$gc_response, tag = "A") + pub_colour() +
-      locked_axis("y", d$y, n = 6, pad = 0.03) + guides(fill = "none") +
+      locked_axis("y", yvals, n = 6, pad = 0.03) + guides(fill = "none") +
       theme_publication() + theme_panel_tag()
     if (isTRUE(input$gc_signif) && nlevels(d$g) == 2 && has_pkg("ggsignif")) {
       pv <- tryCatch(gc_fit()$p.value, error = function(e) NA)
@@ -914,16 +1048,20 @@ server <- function(input, output, session) {
     datatable(ph, options = list(pageLength = 10), rownames = FALSE) })
 
   av_plot <- reactive({ d <- av_data(); req(nrow(d) > 0)
+    ph_sig <- if (isTRUE(input$av_signif) && has_pkg("ggsignif")) av_posthoc() else NULL
+    nsig <- if (!is.null(ph_sig) && "p_adj" %in% names(ph_sig)) sum(ph_sig$p_adj < 0.05) else 0
+    # Stack significance brackets in labelled headroom above the data.
+    yvals <- if (nsig > 0) c(d$y, max(d$y) + (0.08 + 0.09 * nsig) * diff(range(d$y))) else d$y
     p <- ggplot(d, aes(g, y, fill = g)) +
       geom_boxplot(outlier.shape = NA, width = 0.6, colour = "black", linewidth = pt_to_mm(1.0), alpha = 0.35) +
       geom_jitter(aes(colour = g), width = 0.12, height = 0, size = 1.7, alpha = 0.8, show.legend = FALSE) +
       stat_summary(fun = mean, geom = "point", shape = 23, size = 3.2, fill = "white",
                    colour = "black", stroke = pt_to_mm(1.0)) +
       labs(x = input$av_group, y = input$av_response, tag = "A") + pub_colour() +
-      locked_axis("y", d$y, n = 6, pad = 0.03) + guides(fill = "none") +
+      locked_axis("y", yvals, n = 6, pad = 0.03) + guides(fill = "none") +
       theme_publication() + theme_panel_tag()
-    if (isTRUE(input$av_signif) && has_pkg("ggsignif")) {
-      ph <- av_posthoc()
+    if (nsig > 0) {
+      ph <- ph_sig
       if (!is.null(ph) && "p_adj" %in% names(ph)) {
         sig <- ph[ph$p_adj < 0.05, , drop = FALSE]
         if (nrow(sig)) { comps <- strsplit(sig$Comparison, " ?- ?")
@@ -1316,6 +1454,10 @@ server <- function(input, output, session) {
       pca = { pc <- stats::prcomp(m, scale. = isTRUE(input$ord_scale))
         ve <- (pc$sdev^2 / sum(pc$sdev^2))[1:2] * 100
         list(scores = as.data.frame(pc$x[, 1:2]), axes = c("PC1", "PC2"), ve = ve, obj = pc) },
+      pcoa = { D <- vegan::vegdist(m, method = input$nmds_dist)
+        pc <- stats::cmdscale(D, k = 2, eig = TRUE); pos <- pc$eig[pc$eig > 0]
+        ve <- pc$eig[1:2] / sum(pos) * 100
+        list(scores = as.data.frame(pc$points), axes = c("PCoA1", "PCoA2"), ve = ve, obj = pc) },
       ca = { ca <- vegan::cca(m); sc <- vegan::scores(ca, display = "sites", choices = 1:2)
         ve <- ca$CA$eig[1:2] / sum(ca$CA$eig) * 100
         list(scores = as.data.frame(sc), axes = c("CA1", "CA2"), ve = ve, obj = ca) },
@@ -1338,7 +1480,15 @@ server <- function(input, output, session) {
     if (!any(is.na(res$ve))) cat(sprintf("%s: %.1f%%   %s: %.1f%%\n", res$axes[1], res$ve[1], res$axes[2], res$ve[2]))
     if (!is.null(res$stress)) cat(sprintf("NMDS stress: %.4f %s\n", res$stress,
                                           if (res$stress < 0.2) "(acceptable)" else "(high — interpret cautiously)"))
-    cat("\n"); print(res$obj) })
+    cat("\n")
+    if (input$ord_method == "pcoa") {
+      eig <- res$obj$eig; pos <- eig[eig > 0]
+      cat("Principal coordinates analysis (classical MDS)\n")
+      cat("Positive eigenvalues:", length(pos), "of", length(eig), "\n")
+      cat("Variance explained by first 5 axes:\n")
+      print(round(head(pos / sum(pos) * 100, 5), 2))
+      if (!is.null(res$obj$GOF)) cat("Goodness of fit:", round(res$obj$GOF[1], 3), "\n")
+    } else print(res$obj) })
 
   ord_plot <- reactive({ res <- ord_model(); req(res); is.null(res$error) || return(NULL)
     d <- res$scores; d$grp <- if (!is.null(res$group)) res$group else factor("All")
@@ -1356,6 +1506,131 @@ server <- function(input, output, session) {
   output$ord_plot <- renderPlot(ord_plot())
   output$dl_ord <- downloadHandler(function() paste0("ordination_", input$ord_method, ".png"),
                                    function(f) save_publication(ord_plot(), f, 6.5, 6))
+
+  # --- Compare methods ----------------------------------------------------
+  output$cmp_ord_vars_ui <- renderUI(checkboxGroupInput("cmp_ord_vars", "Matrix variables",
+                                        choices = numeric_vars(),
+                                        selected = grep("^Sp", numeric_vars(), value = TRUE) %||% numeric_vars()))
+
+  ord_panel <- function(scores, xlab, ylab, grp, tag) {
+    d <- as.data.frame(scores); names(d)[1:2] <- c("Dim1", "Dim2")
+    d$grp <- if (!is.null(grp)) grp else factor("All")
+    p <- ggplot(d, aes(Dim1, Dim2, colour = grp, fill = grp)) +
+      geom_hline(yintercept = 0, colour = "grey75", linewidth = pt_to_mm(0.5)) +
+      geom_vline(xintercept = 0, colour = "grey75", linewidth = pt_to_mm(0.5)) +
+      geom_point(size = 2.4, alpha = 0.85) +
+      labs(x = xlab, y = ylab, tag = tag) + pub_colour() +
+      locked_axis("x", d$Dim1, n = 5, pad = 0.03) + locked_axis("y", d$Dim2, n = 5, pad = 0.03) +
+      theme_publication() + theme_panel_tag()
+    if (nlevels(d$grp) > 1) p <- p + stat_ellipse(type = "norm", linewidth = pt_to_mm(0.9), show.legend = FALSE)
+    else p <- p + guides(colour = "none", fill = "none")
+    p
+  }
+
+  cmp_ord <- reactive({ req(input$cmp_ord_vars); has_pkg("vegan") || return(NULL)
+    if (length(input$cmp_ord_vars) < 3) return(NULL)
+    df <- rv$data; m <- df[, input$cmp_ord_vars, drop = FALSE]
+    keep <- stats::complete.cases(m); m <- m[keep, , drop = FALSE]
+    grp <- if (nzchar(input$cmp_ord_group %||% "")) factor(df[[input$cmp_ord_group]][keep]) else NULL
+    tryCatch({
+      pca <- stats::prcomp(m, scale. = TRUE)
+      pca_ve <- (pca$sdev^2 / sum(pca$sdev^2))[1:2] * 100
+      D <- vegan::vegdist(m, method = input$cmp_dist)
+      pco <- stats::cmdscale(D, k = 2, eig = TRUE); pos <- pco$eig[pco$eig > 0]
+      pco_ve <- pco$eig[1:2] / sum(pos) * 100
+      nmds <- vegan::metaMDS(m, distance = input$cmp_dist, trace = 0, autotransform = FALSE)
+      nmds_sc <- vegan::scores(nmds, display = "sites")
+      pr_pco_nmds <- vegan::protest(pco$points, nmds_sc, permutations = 199)
+      pr_pca_pco  <- vegan::protest(pca$x[, 1:2], pco$points, permutations = 199)
+      list(pca = pca$x[, 1:2], pca_ve = pca_ve, pco = pco$points, pco_ve = pco_ve,
+           nmds = nmds_sc, stress = nmds$stress, grp = grp,
+           pr_pco_nmds = pr_pco_nmds, pr_pca_pco = pr_pca_pco)
+    }, error = function(e) list(error = conditionMessage(e))) })
+
+  cmp_grp <- reactive({ req(input$cmp_y, input$cmp_g)
+    d <- rv$data[, c(input$cmp_y, input$cmp_g)]; names(d) <- c("y", "g")
+    d <- d[stats::complete.cases(d), ]; d$g <- factor(d$g); req(nlevels(d$g) >= 2); d })
+
+  output$cmp_tbl <- renderDT({
+    if (input$cmp_type == "ord") { r <- cmp_ord()
+      if (is.null(r)) return(datatable(data.frame(Message = "Select 3+ matrix variables; requires the 'vegan' package.")))
+      if (!is.null(r$error)) return(datatable(data.frame(Error = r$error)))
+      tab <- data.frame(
+        Method = c("PCA", "PCoA", "NMDS"),
+        Basis = c("Euclidean (scaled)", paste(input$cmp_dist, "distance"), paste(input$cmp_dist, "distance")),
+        Axis1 = c(sprintf("%.1f%%", r$pca_ve[1]), sprintf("%.1f%%", r$pco_ve[1]), "-"),
+        Axis2 = c(sprintf("%.1f%%", r$pca_ve[2]), sprintf("%.1f%%", r$pco_ve[2]), "-"),
+        Fit = c("-", "-", sprintf("stress %.3f", r$stress)), check.names = FALSE)
+      return(datatable(tab, options = list(dom = "t"), rownames = FALSE)) }
+    if (input$cmp_type == "grp") { d <- cmp_grp(); k <- nlevels(d$g)
+      if (k == 2) { lv <- levels(d$g); x <- d$y[d$g == lv[1]]; y <- d$y[d$g == lv[2]]
+        t1 <- stats::t.test(y ~ g, d); t2 <- stats::wilcox.test(y ~ g, d, exact = FALSE)
+        dd <- cohens_d(x, y); rb <- rank_biserial(unname(t2$statistic), length(x), length(y))
+        tab <- data.frame(Test = c("Welch t-test", "Mann-Whitney U"),
+          p_value = signif(c(t1$p.value, t2$p.value), 4),
+          Effect = c(sprintf("d = %.2f (%s)", dd, d_magnitude(dd)),
+                     sprintf("r = %.2f (%s)", rb, r_magnitude(rb))))
+      } else { a <- stats::aov(y ~ g, d); pa <- summary(a)[[1]][["Pr(>F)"]][1]
+        kw <- stats::kruskal.test(y ~ g, d)
+        e2 <- eta_sq_aov(a); ek <- epsilon_sq_kw(unname(kw$statistic), nrow(d))
+        tab <- data.frame(Test = c("One-way ANOVA", "Kruskal-Wallis"),
+          p_value = signif(c(pa, kw$p.value), 4),
+          Effect = c(sprintf("eta2 = %.3f (%s)", e2, eta_magnitude(e2)),
+                     sprintf("eps2 = %.3f (%s)", ek, eta_magnitude(ek)))) }
+      return(datatable(tab, options = list(dom = "t"), rownames = FALSE)) }
+    # correlation
+    req(input$cmp_x1, input$cmp_x2)
+    d <- rv$data[, c(input$cmp_x1, input$cmp_x2)]; d <- d[stats::complete.cases(d), ]
+    pe <- stats::cor.test(d[[1]], d[[2]], method = "pearson")
+    sp <- stats::cor.test(d[[1]], d[[2]], method = "spearman", exact = FALSE)
+    tab <- data.frame(Method = c("Pearson (linear)", "Spearman (monotonic rank)"),
+      Coefficient = round(c(pe$estimate, sp$estimate), 3),
+      p_value = signif(c(pe$p.value, sp$p.value), 4),
+      Strength = c(r_magnitude(pe$estimate), r_magnitude(sp$estimate)))
+    datatable(tab, options = list(dom = "t"), rownames = FALSE) })
+
+  output$cmp_notes <- renderUI({
+    if (input$cmp_type == "ord") { r <- cmp_ord()
+      if (is.null(r) || !is.null(r$error)) return(note("Select 3+ community/matrix columns. PCA works on scaled Euclidean distance (best for linear gradients); PCoA and NMDS work on the ecological distance you choose (better for species data with many zeros).", "info"))
+      c1 <- r$pr_pca_pco$t0; c2 <- r$pr_pco_nmds$t0
+      tagList(
+        note(sprintf("<b>Procrustes correlation</b> measures how similarly two methods arrange the samples (1 = identical layout). PCA vs PCoA: <b>%.2f</b>; PCoA vs NMDS: <b>%.2f</b>.", c1, c2), "info"),
+        note(sprintf("NMDS stress = %.3f (%s). Rule of thumb: &lt; 0.1 excellent, &lt; 0.2 usable, &gt; 0.3 unreliable.", r$stress,
+                     if (r$stress < 0.1) "excellent" else if (r$stress < 0.2) "good" else "high"),
+             if (r$stress < 0.2) "ok" else "warn"),
+        note("If the three panels look alike (high Procrustes correlation), your conclusions are robust to method choice. PCA on abundances is prone to the horseshoe artifact — divergence from PCoA/NMDS is a sign to prefer a distance-based method.", "info")) }
+    else if (input$cmp_type == "grp")
+      note("The parametric test (t / ANOVA) has more power when its normality and equal-variance assumptions hold; the rank-based test (Mann-Whitney / Kruskal-Wallis) is robust when they don't. If the two p-values land on the same side of 0.05, your conclusion is solid. If they disagree, trust the non-parametric test for skewed or small samples.", "info")
+    else
+      note("Pearson captures straight-line association and assumes roughly normal data; Spearman captures any monotonic (consistently increasing/decreasing) relationship and resists outliers. A large gap between them signals non-linearity or influential outliers — inspect the scatter below.", "info") })
+
+  cmp_plot <- reactive({
+    if (input$cmp_type == "ord") { r <- cmp_ord(); req(r); is.null(r$error) || return(NULL)
+      req(has_pkg("patchwork"))
+      pa <- ord_panel(r$pca, sprintf("PC1 (%.1f%%)", r$pca_ve[1]), sprintf("PC2 (%.1f%%)", r$pca_ve[2]), r$grp, "A")
+      pb <- ord_panel(r$pco, sprintf("PCoA1 (%.1f%%)", r$pco_ve[1]), sprintf("PCoA2 (%.1f%%)", r$pco_ve[2]), r$grp, "B")
+      pc <- ord_panel(r$nmds, "NMDS1", "NMDS2", r$grp, "C")
+      return(patchwork::wrap_plots(pa, pb, pc, nrow = 1) +
+             patchwork::plot_layout(guides = "collect")) }
+    if (input$cmp_type == "grp") { d <- cmp_grp()
+      p <- ggplot(d, aes(g, y, fill = g)) +
+        geom_boxplot(outlier.shape = NA, width = 0.55, colour = "black", linewidth = pt_to_mm(1.0), alpha = 0.35) +
+        geom_jitter(aes(colour = g), width = 0.12, height = 0, size = 1.7, alpha = 0.8, show.legend = FALSE) +
+        stat_summary(fun = mean, geom = "point", shape = 23, size = 3.2, fill = "white", colour = "black", stroke = pt_to_mm(1.0)) +
+        labs(x = input$cmp_g, y = input$cmp_y, tag = "A") + pub_colour() +
+        locked_axis("y", d$y, n = 6, pad = 0.03) + guides(fill = "none") +
+        theme_publication() + theme_panel_tag()
+      return(p) }
+    req(input$cmp_x1, input$cmp_x2)
+    d <- rv$data[, c(input$cmp_x1, input$cmp_x2)]; names(d) <- c("x", "y"); d <- d[stats::complete.cases(d), ]
+    ggplot(d, aes(x, y)) + geom_point(size = 2, alpha = 0.75, colour = "#0072B2") +
+      geom_smooth(method = "lm", se = FALSE, colour = "#D55E00", linewidth = pt_to_mm(1.4)) +
+      labs(x = input$cmp_x1, y = input$cmp_x2, tag = "A") +
+      locked_axis("x", d$x, n = 6, pad = 0.03) + locked_axis("y", d$y, n = 6, pad = 0.03) +
+      theme_publication() + theme_panel_tag() })
+  output$cmp_plot <- renderPlot(cmp_plot())
+  output$dl_cmp <- downloadHandler(function() paste0("compare_", input$cmp_type, ".png"),
+    function(f) save_publication(cmp_plot(), f, width = if (input$cmp_type == "ord") 13 else 6.5, height = 5))
 
   # --- Power --------------------------------------------------------------
   pwr_res <- reactive({ if (!has_pkg("pwr")) return(NULL)
