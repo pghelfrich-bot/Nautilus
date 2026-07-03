@@ -76,6 +76,7 @@ theme_publication <- function(base_size = 13, base_family = PUB_FONT) {
       axis.line         = element_blank(),
       axis.ticks        = element_line(colour = "black", linewidth = SPINE_MM),
       axis.ticks.length = unit(-4, "pt"),           # negative draws ticks inward
+      axis.minor.ticks.length = unit(-2.2, "pt"),   # shorter inward minor ticks
       axis.text         = element_text(colour = "black"),
       axis.text.x       = element_text(margin = margin(t = 6)),
       axis.text.y       = element_text(margin = margin(r = 6)),
@@ -98,21 +99,37 @@ pub_colour <- function(name = NULL) {
        scale_fill_manual(values = pub_discrete, na.value = "grey40", name = name))
 }
 
-# Unlabelled ticks on the top and right spines so all four sides carry ticks.
-four_side_x <- function(...) scale_x_continuous(..., sec.axis = dup_axis(name = NULL, labels = NULL))
+# Minor tick positions subdividing each major interval (Origin-style).
+minor_ticks_at <- function(brks, k = 5) {
+  if (length(brks) < 2) return(waiver())
+  step <- (brks[2] - brks[1]) / k
+  if (!is.finite(step) || step == 0) return(waiver())
+  seq(min(brks), max(brks), by = step)
+}
 
-# Lock a continuous axis to its labelled tick boundaries. A small symmetric
-# pad (default 3%) is permitted only when marks would otherwise sit on a spine.
-locked_axis <- function(axis = c("y", "x"), values, n = 6, pad = 0, sec = TRUE) {
+# Unlabelled major+minor ticks on the top and right spines so all four sides
+# carry the same tick structure. Labels stay on the bottom/left only.
+four_side_x <- function(...) scale_x_continuous(..., minor_breaks = waiver(),
+  guide = guide_axis(minor.ticks = TRUE),
+  sec.axis = dup_axis(name = NULL, labels = NULL, guide = guide_axis(minor.ticks = TRUE)))
+
+# Lock a continuous axis so the frame ends exactly on the outermost labelled
+# tick (Origin convention): loose "nice" breaks enclose the data, there is no
+# unlabelled space past the last tick, and minor ticks fill each interval.
+locked_axis <- function(axis = c("y", "x"), values, n = 6, pad = 0, sec = TRUE, minor = 5) {
   axis <- match.arg(axis)
-  brks <- scales::extended_breaks(n = n)(values[is.finite(values)])
-  brks <- brks[is.finite(brks)]
+  v <- values[is.finite(values)]
+  if (!length(v)) v <- c(0, 1)
+  rng <- range(v); if (diff(rng) == 0) rng <- rng + c(-0.5, 0.5)
+  brks <- labeling::extended(rng[1], rng[2], m = n, only.loose = TRUE)
+  brks <- unique(brks[is.finite(brks)])
   lims <- range(brks)
-  ex <- expansion(mult = pad)
+  mnr <- minor_ticks_at(brks, minor)
+  gd <- guide_axis(minor.ticks = TRUE)
   s <- if (axis == "y") scale_y_continuous else scale_x_continuous
-  if (sec) s(breaks = brks, limits = lims, expand = ex,
-             sec.axis = dup_axis(name = NULL, labels = NULL))
-  else s(breaks = brks, limits = lims, expand = ex)
+  if (sec) s(breaks = brks, minor_breaks = mnr, limits = lims, expand = c(0, 0), guide = gd,
+             sec.axis = dup_axis(name = NULL, labels = NULL, guide = guide_axis(minor.ticks = TRUE)))
+  else s(breaks = brks, minor_breaks = mnr, limits = lims, expand = c(0, 0), guide = gd)
 }
 
 # Bold uppercase panel label anchored to the top-left; pair with labs(tag = "A").

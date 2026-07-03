@@ -112,10 +112,11 @@ All figures pass through a single `theme_publication()` and export at 300 dpi:
 - Wong et al. (2011) colorblind-safe palette (blue `#0072B2`, orange `#D55E00`,
   extended as groups grow).
 - Georgia serif typography throughout.
-- Inward tick marks on all four sides, black 1.2 pt spines, white background,
-  no gridlines.
-- Y-axes locked to labelled tick boundaries (≤ 3% breathing room only when data
-  would collide with a spine).
+- Inward **major and minor** tick marks on all four sides (Origin-style), black
+  1.2 pt spines, white background, no gridlines.
+- Axes use loose "nice" breaks so the frame ends **exactly on the outermost
+  labelled tick** — no unlabelled space past the last tick, and the corners sit
+  at labelled coordinates.
 - Bold-letter panel labels in the top-left corner (toggleable), no panel titles,
   no footer notes, no N values in legends.
 - Font, base text size, and panel-label visibility are adjustable live from the
