@@ -24,6 +24,7 @@
 #   ggdendro     - de Vries A, Ripley BD. Dendrograms as ggplot2 data.
 #   ggrepel      - Slowikowski K. Repulsive text labels for ggplot2.
 #   svglite      - Wickham H et al. An SVG graphics device.
+#   drc          - Ritz C et al. Dose-Response Analysis Using R. PLoS ONE 2015.
 #   scales       - Wickham H, Seidel D. Scale functions for visualization.
 #   readxl       - Wickham H, Bryan J. Read Excel files.
 
@@ -51,6 +52,11 @@ wong_values <- function(n) {
   if (n <= length(wong_palette)) wong_palette[seq_len(n)]
   else colorRampPalette(wong_palette)(n)
 }
+
+# Distinct, high-contrast plotting shapes for a second grouping factor (e.g. site).
+pub_shapes <- c(16, 17, 15, 18, 8, 4, 3, 7, 10, 12)
+pub_shape_scale <- function(name = NULL)
+  scale_shape_manual(values = rep(pub_shapes, length.out = 64), name = name)
 
 # ggplot linewidth is expressed in millimetres; convert from points.
 pt_to_mm <- function(pt) pt / 2.834645669
@@ -274,7 +280,8 @@ de_table <- function(X, group, method = c("t", "wilcox")) {
 # Clustered heatmap with an optional sample dendrogram and group annotation bar.
 heatmap_figure <- function(X, group = NULL, scale = c("feature", "sample", "none"),
                            cluster_samples = TRUE, cluster_features = TRUE,
-                           show_values = FALSE, font = PUB_FONT, base_size = 13, tags = TRUE) {
+                           show_values = FALSE, row_dendro = TRUE,
+                           font = PUB_FONT, base_size = 13, tags = TRUE) {
   scale <- match.arg(scale)
   X <- as.matrix(X); storage.mode(X) <- "double"
   Xs <- switch(scale, feature = scale(X), sample = t(scale(t(X))), none = X)
@@ -313,6 +320,18 @@ heatmap_figure <- function(X, group = NULL, scale = c("feature", "sample", "none
     scale_x_continuous(expand = c(0, 0), limits = c(0.5, n + 0.5)) +
     scale_y_continuous(expand = expansion(mult = c(0, 0.03))) +
     labs(x = NULL, y = NULL) + theme_void()
+  # Optional feature (row) dendrogram on the left, aligned to heatmap rows.
+  want_left <- row_dendro && !is.null(hc_f) && show_f
+  left <- NULL
+  if (want_left) {
+    segf <- ggdendro::dendro_data(hc_f, type = "rectangle")$segments
+    left <- ggplot(segf) +
+      geom_segment(aes(x = y, y = x, xend = yend, yend = xend), colour = "black", linewidth = pt_to_mm(0.8)) +
+      scale_y_continuous(expand = c(0, 0), limits = c(0.5, p + 0.5)) +
+      scale_x_reverse(expand = expansion(mult = c(0.03, 0))) +
+      labs(x = NULL, y = NULL) + theme_void()
+  }
+  abar <- NULL
   if (!is.null(group)) {
     ann <- data.frame(xi = seq_len(n), grp = factor(group[s_ord]))
     abar <- ggplot(ann, aes(xi, 1, fill = grp)) +
@@ -322,11 +341,50 @@ heatmap_figure <- function(X, group = NULL, scale = c("feature", "sample", "none
       labs(x = NULL, y = NULL) + theme_void() +
       theme(legend.position = "right", legend.text = element_text(family = font),
             legend.title = element_text(family = font))
-    return(patchwork::wrap_plots(top, abar, hm, ncol = 1,
-                                 heights = c(0.16, 0.05, 0.79)))
   }
-  patchwork::wrap_plots(top, hm, ncol = 1, heights = c(0.18, 0.82))
+  lw <- 0.14  # left dendrogram column width fraction
+  if (want_left) {
+    if (!is.null(abar))
+      patchwork::wrap_plots(top, abar, left, hm, design = "#A\n#B\nCD",
+        widths = c(lw, 1 - lw), heights = c(0.16, 0.05, 0.79))
+    else
+      patchwork::wrap_plots(top, left, hm, design = "#A\nBC",
+        widths = c(lw, 1 - lw), heights = c(0.18, 0.82))
+  } else if (!is.null(abar)) {
+    patchwork::wrap_plots(top, abar, hm, ncol = 1, heights = c(0.16, 0.05, 0.79))
+  } else {
+    patchwork::wrap_plots(top, hm, ncol = 1, heights = c(0.18, 0.82))
+  }
 }
+
+# Four-parameter log-logistic dose-response fit (drc LL.4), optionally per group.
+# Returns the model, a prediction grid, and a per-curve parameter/EC50 table.
+fit_dose <- function(dose, resp, grp = NULL, logx = TRUE, npts = 200) {
+  df <- data.frame(dose = dose, resp = resp)
+  if (!is.null(grp)) df$grp <- factor(grp)
+  df <- df[stats::complete.cases(df), ]
+  m <- if (is.null(grp)) drc::drm(resp ~ dose, data = df, fct = drc::LL.4())
+       else drc::drm(resp ~ dose, curveid = grp, data = df, fct = drc::LL.4())
+  co <- coef(m)
+  ed <- drc::ED(m, 50, interval = "delta", display = FALSE)
+  pos <- df$dose[df$dose > 0]
+  xs <- if (logx && length(pos)) exp(seq(log(min(pos)), log(max(pos)), length.out = npts))
+        else seq(min(df$dose), max(df$dose), length.out = npts)
+  if (is.null(grp)) {
+    pred <- data.frame(dose = xs, fit = predict(m, newdata = data.frame(dose = xs)), grp = "All")
+    partab <- data.frame(Group = "All", EC50 = co[["e:(Intercept)"]],
+      EC50_low = ed[1, 3], EC50_high = ed[1, 4], Hill = -co[["b:(Intercept)"]],
+      Lower = co[["c:(Intercept)"]], Upper = co[["d:(Intercept)"]])
+  } else {
+    lv <- levels(df$grp); rn <- rownames(ed)
+    pred <- do.call(rbind, lapply(lv, function(g) data.frame(dose = xs,
+      fit = predict(m, newdata = data.frame(dose = xs, grp = factor(g, levels = lv))), grp = g)))
+    partab <- do.call(rbind, lapply(lv, function(g) {
+      er <- ed[grep(paste0("e:", g, ":50"), rn, fixed = TRUE)[1], ]
+      data.frame(Group = g, EC50 = co[[paste0("e:", g)]], EC50_low = er[3], EC50_high = er[4],
+        Hill = -co[[paste0("b:", g)]], Lower = co[[paste0("c:", g)]], Upper = co[[paste0("d:", g)]]) }))
+  }
+  list(model = m, pred = pred, partab = partab, data = df) }
 
 # ---------------------------------------------------------------------------
 # UI
@@ -423,6 +481,7 @@ ui <- navbarPage(
         sidebarPanel(width = 3,
           uiOutput("pca_vars_ui"),
           selectInput("pca_group", "Colour by (optional)", choices = c("None" = "")),
+          selectInput("pca_shape", "Shape by (optional, e.g. site)", choices = c("None" = "")),
           checkboxInput("pca_scale", "Scale variables (recommended)", TRUE),
           radioButtons("pca_fig", "Figure", c("Biplot" = "biplot", "Scree plot" = "scree")),
           sliderInput("pca_arrows", "Loading arrows to show", min = 0, max = 20, value = 8),
@@ -561,6 +620,20 @@ ui <- navbarPage(
 
   # --- Regression ---------------------------------------------------------
   navbarMenu("Regression",
+    tabPanel("Dose-Response",
+      sidebarLayout(
+        sidebarPanel(width = 3,
+          selectInput("dr_dose", "Dose / concentration", choices = NULL),
+          selectInput("dr_resp", "Response", choices = NULL),
+          selectInput("dr_group", "Separate curves by (optional)", choices = c("None" = "")),
+          checkboxInput("dr_logx", "Log-scale dose axis", TRUE),
+          downloadButton("dl_dr", "Download figure")),
+        mainPanel(width = 9,
+          h4("Dose-response (4-parameter logistic)"), uiOutput("dr_notes"),
+          plotOutput("dr_plot", height = "500px"),
+          tags$hr(), h4("EC50 and curve parameters"), DTOutput("dr_tbl"))
+      )
+    ),
     tabPanel("Linear",
       sidebarLayout(
         sidebarPanel(width = 3,
@@ -665,7 +738,9 @@ ui <- navbarPage(
           selectInput("ord_method", "Method",
             c("PCA" = "pca", "PCoA (metric MDS)" = "pcoa", "Correspondence Analysis" = "ca",
               "Detrended CA" = "dca", "NMDS" = "nmds", "Redundancy Analysis" = "rda")),
-          uiOutput("ord_vars_ui"), uiOutput("ord_group_ui"), uiOutput("ord_constrain_ui"),
+          uiOutput("ord_vars_ui"), uiOutput("ord_group_ui"),
+          selectInput("ord_shape", "Shape by (optional, e.g. site)", choices = c("None" = "")),
+          uiOutput("ord_constrain_ui"),
           selectInput("nmds_dist", "NMDS distance", c("bray", "euclidean", "jaccard", "gower")),
           checkboxInput("ord_scale", "Scale variables (PCA)", TRUE),
           downloadButton("dl_ord", "Download figure (300 dpi)")),
@@ -688,6 +763,7 @@ ui <- navbarPage(
               "Z-score each sample" = "sample", "None (raw values)" = "none")),
           checkboxInput("hm_cluster_s", "Cluster samples (columns)", TRUE),
           checkboxInput("hm_cluster_f", "Cluster features (rows)", TRUE),
+          checkboxInput("hm_row_dendro", "Show feature dendrogram (left)", TRUE),
           checkboxInput("hm_values", "Print values in cells", FALSE),
           downloadButton("dl_hm", "Download figure")),
         mainPanel(width = 9,
@@ -739,6 +815,7 @@ ui <- navbarPage(
         conditionalPanel("input.cmp_type == 'ord'",
           uiOutput("cmp_ord_vars_ui"),
           selectInput("cmp_ord_group", "Grouping (colour)", choices = c("None" = "")),
+          selectInput("cmp_ord_shape", "Shape by (optional, e.g. site)", choices = c("None" = "")),
           selectInput("cmp_dist", "Distance (PCoA / NMDS)", c("bray", "euclidean", "jaccard", "gower"))),
         conditionalPanel("input.cmp_type == 'grp'",
           selectInput("cmp_y", "Response (numeric)", choices = NULL),
@@ -873,16 +950,22 @@ server <- function(input, output, session) {
   observeEvent(input$demo_exp, {
     set.seed(1)
     n <- 40
+    conc <- 10^stats::runif(2 * n, -2, 2)                 # 0.01 to 100 units
+    ec50 <- rep(c(1, 5), each = n)                        # potency differs by group
+    viab <- 100 / (1 + (conc / ec50)^1.3) + stats::rnorm(2 * n, 0, 5)
     rv$data <- data.frame(
-      Group      = rep(c("Control", "Treatment"), each = n),
-      Sex        = sample(c("F", "M"), 2 * n, TRUE),
-      Response   = c(rnorm(n, 10, 2), rnorm(n, 12.5, 2.2)),
-      Biomarker  = c(rlnorm(n, 1.4, 0.4), rlnorm(n, 1.7, 0.4)),
-      Dose       = rep(c(0, 5, 10, 20), length.out = 2 * n),
-      Improved   = rbinom(2 * n, 1, rep(c(0.35, 0.65), each = n)),
-      SurvTime   = round(c(rexp(n, 0.10), rexp(n, 0.06)), 1),
-      Event      = rbinom(2 * n, 1, 0.75),
-      Counts     = rpois(2 * n, rep(c(3, 6), each = n))
+      Group         = rep(c("Control", "Treatment"), each = n),
+      Sex           = sample(c("F", "M"), 2 * n, TRUE),
+      Site          = sample(c("North", "South", "East"), 2 * n, TRUE),
+      Response      = c(rnorm(n, 10, 2), rnorm(n, 12.5, 2.2)),
+      Biomarker     = c(rlnorm(n, 1.4, 0.4), rlnorm(n, 1.7, 0.4)),
+      Dose          = rep(c(0, 5, 10, 20), length.out = 2 * n),
+      Concentration = round(conc, 3),
+      Viability     = round(viab, 1),
+      Improved      = rbinom(2 * n, 1, rep(c(0.35, 0.65), each = n)),
+      SurvTime      = round(c(rexp(n, 0.10), rexp(n, 0.06)), 1),
+      Event         = rbinom(2 * n, 1, 0.75),
+      Counts        = rpois(2 * n, rep(c(3, 6), each = n))
     )
   })
 
@@ -922,12 +1005,14 @@ server <- function(input, output, session) {
     upd("rr_exp", bv, bv[1]); upd("rr_out", bv, bv[2] %||% bv[1])
     upd("dx_score", nv, nv[1]); upd("dx_truth", bv, bv[1])
     upd("reg_y", nv, nv[1]); upd("logit_y", bv, bv[1]); upd("pois_y", nv, nv[1])
+    upd("dr_dose", nv, nv[1]); upd("dr_resp", nv, nv[2] %||% nv[1]); upd("dr_group", c("None" = "", fv))
     upd("cor_partial", c("None" = "", nv))
     upd("surv_time", nv, nv[1]); upd("surv_status", c(bv, nv), bv[1] %||% nv[1])
     upd("surv_group", c("None" = "", fv))
     upd("div_group", c("None" = "", fv)); upd("beta_group", fv, fv[1])
     upd("ord_group", c("None" = "", fv))
-    upd("cmp_ord_group", c("None" = "", fv))
+    upd("cmp_ord_group", c("None" = "", fv)); upd("cmp_ord_shape", c("None" = "", fv))
+    upd("ord_shape", c("None" = "", fv)); upd("pca_shape", c("None" = "", fv))
     upd("cmp_y", nv, nv[1]); upd("cmp_g", fv, fv[1])
     upd("cmp_x1", nv, nv[1]); upd("cmp_x2", nv, nv[2] %||% nv[1])
     upd("hm_group", c("None" = "", fv)); upd("de_group", fv, fv[1])
@@ -1074,8 +1159,9 @@ server <- function(input, output, session) {
     m <- m[, vapply(m, function(z) stats::sd(z) > 0, logical(1)), drop = FALSE]
     if (ncol(m) < 2) return(NULL)
     grp <- if (nzchar(input$pca_group %||% "")) factor(df[[input$pca_group]][keep]) else NULL
+    shp <- if (nzchar(input$pca_shape %||% "")) factor(df[[input$pca_shape]][keep]) else NULL
     pc <- stats::prcomp(m, scale. = isTRUE(input$pca_scale))
-    list(pc = pc, ve = pc$sdev^2 / sum(pc$sdev^2) * 100, grp = grp) })
+    list(pc = pc, ve = pc$sdev^2 / sum(pc$sdev^2) * 100, grp = grp, shp = shp) })
   output$pca_notes <- renderUI({ mo <- pca_model()
     if (is.null(mo)) return(note("Select at least 2 numeric variables with variation.", "warn"))
     note(sprintf("PC1 and PC2 capture <b>%.1f%%</b> of the total variation. In the biplot, points are samples and arrows are variables: arrows pointing the same way are positively correlated, opposite ways negatively, and longer arrows load more strongly. The scree plot shows how many components are worth keeping (look for the 'elbow').", mo$ve[1] + mo$ve[2]), "info") })
@@ -1095,6 +1181,7 @@ server <- function(input, output, session) {
     } else {
       sc <- as.data.frame(mo$pc$x[, 1:2]); names(sc) <- c("PC1", "PC2")
       sc$grp <- mo$grp %||% factor("All")
+      has_shape <- !is.null(mo$shp); sc$shp <- if (has_shape) mo$shp else factor("All")
       ld <- as.data.frame(mo$pc$rotation[, 1:2]); names(ld) <- c("PC1", "PC2"); ld$var <- rownames(ld)
       mult <- 0.8 * min(max(abs(sc$PC1)) / max(abs(ld$PC1)), max(abs(sc$PC2)) / max(abs(ld$PC2)))
       ld$x <- ld$PC1 * mult; ld$y <- ld$PC2 * mult
@@ -1102,7 +1189,8 @@ server <- function(input, output, session) {
       p <- ggplot(sc, aes(PC1, PC2)) +
         geom_hline(yintercept = 0, colour = "grey80", linewidth = pt_to_mm(0.5)) +
         geom_vline(xintercept = 0, colour = "grey80", linewidth = pt_to_mm(0.5)) +
-        geom_point(aes(colour = grp), size = 2.4, alpha = 0.85) + pub_colour(input$pca_group)
+        geom_point(aes(colour = grp, shape = shp), size = 2.4, alpha = 0.85) +
+        pub_colour(input$pca_group) + pub_shape_scale(input$pca_shape)
       xr <- range(sc$PC1); yr <- range(sc$PC2)
       if (nrow(ld) > 0 && input$pca_arrows > 0) {
         p <- p + geom_segment(data = ld, aes(x = 0, y = 0, xend = x, yend = y),
@@ -1116,6 +1204,7 @@ server <- function(input, output, session) {
         locked_axis("x", xr, n = 6, pad = 0.05) + locked_axis("y", yr, n = 6, pad = 0.05) +
         thm() + tagthm()
       if (is.null(mo$grp)) p <- p + guides(colour = "none")
+      if (!has_shape) p <- p + guides(shape = "none")
       p
     } })
   output$pca_plot <- renderPlot(pca_plot())
@@ -1567,6 +1656,43 @@ server <- function(input, output, session) {
                  if (od) "This is over-dispersed (&gt; ~1.5): refit with quasi-Poisson or a negative-binomial model or your p-values will be too optimistic."
                  else "Close to 1, so the Poisson assumption is reasonable."), if (od) "warn" else "ok")) })
 
+  # --- Dose-response ------------------------------------------------------
+  dr_fit <- reactive({ req(input$dr_dose, input$dr_resp, has_pkg("drc"))
+    df <- rv$data; req(input$dr_dose %in% names(df), input$dr_resp %in% names(df))
+    grp <- if (nzchar(input$dr_group %||% "")) df[[input$dr_group]] else NULL
+    tryCatch(fit_dose(df[[input$dr_dose]], df[[input$dr_resp]], grp, logx = isTRUE(input$dr_logx)),
+             error = function(e) list(error = conditionMessage(e))) })
+  output$dr_notes <- renderUI({
+    if (!has_pkg("drc")) return(note("The <b>drc</b> package is required for dose-response fitting. install.packages('drc').", "warn"))
+    f <- dr_fit(); req(f)
+    if (!is.null(f$error)) return(note(sprintf("The curve could not be fit: %s. Dose-response fitting needs a range of doses spanning low to saturating response, with replication.", f$error), "bad"))
+    note("The <b>EC50</b> (also called ED50 or IC50) is the dose producing a half-maximal response — the standard potency summary. The <b>Hill slope</b> measures how steeply response changes with dose; <b>Lower/Upper</b> are the fitted response plateaus. Non-overlapping EC50 confidence intervals between groups indicate a real difference in potency.", "info") })
+  dr_plot <- reactive({ f <- dr_fit(); req(f); is.null(f$error) || return(NULL)
+    d <- f$data; d$grp <- if ("grp" %in% names(d)) d$grp else factor("All")
+    pred <- f$pred; pred$grp <- factor(pred$grp)
+    dd <- if (isTRUE(input$dr_logx)) d[d$dose > 0, ] else d
+    p <- ggplot(dd, aes(dose, resp, colour = grp)) +
+      geom_point(size = 2, alpha = 0.8) +
+      geom_line(data = pred, aes(dose, fit, colour = grp), linewidth = pt_to_mm(1.6)) +
+      pub_colour(input$dr_group) +
+      labs(x = input$dr_dose, y = input$dr_resp, tag = "A", colour = input$dr_group) +
+      locked_axis("y", c(dd$resp, pred$fit), n = 6, pad = 0.03) +
+      thm() + tagthm()
+    if (isTRUE(input$dr_logx))
+      p <- p + scale_x_log10(sec.axis = dup_axis(name = NULL, labels = NULL))
+    else p <- p + locked_axis("x", dd$dose, n = 6, pad = 0.03)
+    if (nlevels(factor(d$grp)) < 2) p <- p + guides(colour = "none")
+    p })
+  output$dr_plot <- renderPlot({ f <- dr_fit()
+    if (is.null(f) || !is.null(f$error))
+      return(ggplot() + annotate("text", 0, 0, label = "Choose a dose and response; a fittable sigmoid is needed.", family = pfont(), size = 5) + theme_void())
+    dr_plot() })
+  output$dr_tbl <- renderDT({ f <- dr_fit(); req(f); is.null(f$error) || return(NULL)
+    t <- f$partab; t[-1] <- lapply(t[-1], function(z) signif(as.numeric(z), 4))
+    names(t) <- c("Group", "EC50", "EC50 lower", "EC50 upper", "Hill slope", "Lower plateau", "Upper plateau")
+    datatable(t, options = list(dom = "t", scrollX = TRUE), rownames = FALSE) })
+  output$dl_dr <- dl_handler("dose_response", dr_plot, width = 6.5, height = 5)
+
   # --- Correlation --------------------------------------------------------
   output$cor_vars_ui <- renderUI(checkboxGroupInput("cor_vars", "Variables",
                                    choices = numeric_vars(), selected = head(numeric_vars(), 6)))
@@ -1715,6 +1841,7 @@ server <- function(input, output, session) {
   ord_model <- reactive({ req(input$ord_vars); if (length(input$ord_vars) < 2) return(NULL)
     df <- rv$data; m <- df[, input$ord_vars, drop = FALSE]; keep <- stats::complete.cases(m); m <- m[keep, , drop = FALSE]
     grp <- if (nzchar(input$ord_group %||% "")) factor(df[[input$ord_group]][keep]) else NULL
+    shp <- if (nzchar(input$ord_shape %||% "")) factor(df[[input$ord_shape]][keep]) else NULL
     method <- input$ord_method
     if (method != "pca" && !has_pkg("vegan")) return(list(error = "The 'vegan' package is required for this method."))
     res <- tryCatch(switch(method,
@@ -1739,7 +1866,7 @@ server <- function(input, output, session) {
         list(scores = sc, axes = c("RDA1", "RDA2"), ve = ve, obj = rd) }),
       error = function(e) list(error = conditionMessage(e)))
     if (!is.null(res$error)) return(res)
-    names(res$scores)[1:2] <- c("Dim1", "Dim2"); res$group <- grp; res })
+    names(res$scores)[1:2] <- c("Dim1", "Dim2"); res$group <- grp; res$shape <- shp; res })
 
   output$ord_summary <- renderPrint({ res <- ord_model(); req(res)
     if (!is.null(res$error)) { cat("Error:", res$error, "\n"); return(invisible()) }
@@ -1759,17 +1886,21 @@ server <- function(input, output, session) {
 
   ord_plot <- reactive({ res <- ord_model(); req(res); is.null(res$error) || return(NULL)
     d <- res$scores; d$grp <- if (!is.null(res$group)) res$group else factor("All")
+    has_shape <- !is.null(res$shape); d$shp <- if (has_shape) res$shape else factor("All")
     xlab <- if (!is.na(res$ve[1])) sprintf("%s (%.1f%%)", res$axes[1], res$ve[1]) else res$axes[1]
     ylab <- if (!is.na(res$ve[2])) sprintf("%s (%.1f%%)", res$axes[2], res$ve[2]) else res$axes[2]
     p <- ggplot(d, aes(Dim1, Dim2, colour = grp, fill = grp)) +
       geom_hline(yintercept = 0, colour = "grey75", linewidth = pt_to_mm(0.5)) +
       geom_vline(xintercept = 0, colour = "grey75", linewidth = pt_to_mm(0.5)) +
-      geom_point(size = 2.6, alpha = 0.85) +
+      geom_point(aes(shape = shp), size = 2.6, alpha = 0.85) +
+      pub_shape_scale(input$ord_shape) +
       labs(x = xlab, y = ylab, tag = "A", colour = input$ord_group, fill = input$ord_group) + pub_colour() +
       locked_axis("x", d$Dim1, n = 6, pad = 0.03) + locked_axis("y", d$Dim2, n = 6, pad = 0.03) +
       thm() + tagthm()
-    if (nlevels(d$grp) > 1) p + stat_ellipse(type = "norm", linewidth = pt_to_mm(1.0), show.legend = FALSE)
-    else p + guides(colour = "none", fill = "none") })
+    if (!has_shape) p <- p + guides(shape = "none")
+    if (nlevels(d$grp) > 1) p <- p + stat_ellipse(type = "norm", linewidth = pt_to_mm(1.0), show.legend = FALSE)
+    else p <- p + guides(colour = "none", fill = "none")
+    p })
   output$ord_plot <- renderPlot(ord_plot())
   output$dl_ord <- dl_handler(function() paste0("ordination_", input$ord_method), ord_plot, 6.5, 6)
 
@@ -1790,6 +1921,7 @@ server <- function(input, output, session) {
                    cluster_samples = isTRUE(input$hm_cluster_s),
                    cluster_features = isTRUE(input$hm_cluster_f),
                    show_values = isTRUE(input$hm_values),
+                   row_dendro = isTRUE(input$hm_row_dendro),
                    font = pfont(), base_size = psize(), tags = ptags()) })
   output$hm_plot <- renderPlot({ if (is.null(hm_input()))
       return(ggplot() + annotate("text", 0, 0, label = "Select at least 2 feature columns.", family = pfont(), size = 5) + theme_void())
@@ -1917,16 +2049,19 @@ server <- function(input, output, session) {
                                         choices = numeric_vars(),
                                         selected = grep("^Sp", numeric_vars(), value = TRUE) %||% numeric_vars()))
 
-  ord_panel <- function(scores, xlab, ylab, grp, tag) {
+  ord_panel <- function(scores, xlab, ylab, grp, tag, shp = NULL) {
     d <- as.data.frame(scores); names(d)[1:2] <- c("Dim1", "Dim2")
     d$grp <- if (!is.null(grp)) grp else factor("All")
+    has_shape <- !is.null(shp); d$shp <- if (has_shape) shp else factor("All")
     p <- ggplot(d, aes(Dim1, Dim2, colour = grp, fill = grp)) +
       geom_hline(yintercept = 0, colour = "grey75", linewidth = pt_to_mm(0.5)) +
       geom_vline(xintercept = 0, colour = "grey75", linewidth = pt_to_mm(0.5)) +
-      geom_point(size = 2.4, alpha = 0.85) +
+      geom_point(aes(shape = shp), size = 2.4, alpha = 0.85) +
+      pub_shape_scale(input$cmp_ord_shape) +
       labs(x = xlab, y = ylab, tag = tag) + pub_colour() +
       locked_axis("x", d$Dim1, n = 5, pad = 0.03) + locked_axis("y", d$Dim2, n = 5, pad = 0.03) +
       thm() + tagthm()
+    if (!has_shape) p <- p + guides(shape = "none")
     if (nlevels(d$grp) > 1) p <- p + stat_ellipse(type = "norm", linewidth = pt_to_mm(0.9), show.legend = FALSE)
     else p <- p + guides(colour = "none", fill = "none")
     p
@@ -1937,6 +2072,7 @@ server <- function(input, output, session) {
     df <- rv$data; m <- df[, input$cmp_ord_vars, drop = FALSE]
     keep <- stats::complete.cases(m); m <- m[keep, , drop = FALSE]
     grp <- if (nzchar(input$cmp_ord_group %||% "")) factor(df[[input$cmp_ord_group]][keep]) else NULL
+    shp <- if (nzchar(input$cmp_ord_shape %||% "")) factor(df[[input$cmp_ord_shape]][keep]) else NULL
     tryCatch({
       pca <- stats::prcomp(m, scale. = TRUE)
       pca_ve <- (pca$sdev^2 / sum(pca$sdev^2))[1:2] * 100
@@ -1948,7 +2084,7 @@ server <- function(input, output, session) {
       pr_pco_nmds <- vegan::protest(pco$points, nmds_sc, permutations = 199)
       pr_pca_pco  <- vegan::protest(pca$x[, 1:2], pco$points, permutations = 199)
       list(pca = pca$x[, 1:2], pca_ve = pca_ve, pco = pco$points, pco_ve = pco_ve,
-           nmds = nmds_sc, stress = nmds$stress, grp = grp,
+           nmds = nmds_sc, stress = nmds$stress, grp = grp, shp = shp,
            pr_pco_nmds = pr_pco_nmds, pr_pca_pco = pr_pca_pco)
     }, error = function(e) list(error = conditionMessage(e))) })
 
@@ -2012,9 +2148,9 @@ server <- function(input, output, session) {
   cmp_plot <- reactive({
     if (input$cmp_type == "ord") { r <- cmp_ord(); req(r); is.null(r$error) || return(NULL)
       req(has_pkg("patchwork"))
-      pa <- ord_panel(r$pca, sprintf("PC1 (%.1f%%)", r$pca_ve[1]), sprintf("PC2 (%.1f%%)", r$pca_ve[2]), r$grp, "A")
-      pb <- ord_panel(r$pco, sprintf("PCoA1 (%.1f%%)", r$pco_ve[1]), sprintf("PCoA2 (%.1f%%)", r$pco_ve[2]), r$grp, "B")
-      pc <- ord_panel(r$nmds, "NMDS1", "NMDS2", r$grp, "C")
+      pa <- ord_panel(r$pca, sprintf("PC1 (%.1f%%)", r$pca_ve[1]), sprintf("PC2 (%.1f%%)", r$pca_ve[2]), r$grp, "A", r$shp)
+      pb <- ord_panel(r$pco, sprintf("PCoA1 (%.1f%%)", r$pco_ve[1]), sprintf("PCoA2 (%.1f%%)", r$pco_ve[2]), r$grp, "B", r$shp)
+      pc <- ord_panel(r$nmds, "NMDS1", "NMDS2", r$grp, "C", r$shp)
       return(patchwork::wrap_plots(pa, pb, pc, nrow = 1) +
              patchwork::plot_layout(guides = "collect")) }
     if (input$cmp_type == "grp") { d <- cmp_grp()

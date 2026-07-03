@@ -52,8 +52,10 @@ risk, risk difference with 95% CIs), and diagnostic accuracy / ROC (AUC,
 sensitivity, specificity, PPV, NPV at the Youden-optimal cutoff).
 
 **Regression** — linear/multiple regression with residual diagnostics, logistic
-regression (odds ratios, probability curve), and Poisson GLM with an
-over-dispersion warning.
+regression (odds ratios, probability curve), Poisson GLM with an over-dispersion
+warning, and **dose-response** curves (4-parameter logistic / drc) reporting
+EC50/ED50 with confidence intervals, Hill slope, and plateaus, with per-group
+sigmoid fits on a log-dose axis.
 
 **Correlation** — Pearson / Spearman / Kendall matrices and pairwise partial
 correlation controlling for a chosen covariate.
@@ -69,10 +71,15 @@ ordination (PCA, PCoA, CA, DCA, NMDS, RDA).
 biplot with sample scores plus labelled variable-loading arrows, so students see
 *which variables* drive the separation, backed by a loadings table.
 
-**Bioinformatics** — a **clustered heatmap** (per-feature or per-sample
-z-scoring, sample dendrogram, group annotation bar, diverging colorblind-safe
-scale), a **differential-expression** module with switchable **volcano and MA
-plots** (per-feature t-test or Mann-Whitney with Benjamini-Hochberg correction,
+Ordination scatters (PCA Explorer, Ecology > Ordination, Compare Methods) also
+accept an optional **shape-by** factor, so a second grouping such as **site** can
+be encoded with point shape while colour encodes treatment.
+
+**Bioinformatics** — a **two-way clustered heatmap** (per-feature or per-sample
+z-scoring, sample dendrogram on top, optional feature dendrogram on the left,
+group annotation bar, diverging colorblind-safe scale), a
+**differential-expression** module with switchable **volcano and MA plots**
+(per-feature t-test or Mann-Whitney with Benjamini-Hochberg correction,
 fold-change/significance thresholds, labelled hits, downloadable results) plus a
 one-click **"send significant features to the Heatmap"** handoff, and a **sample
 clustering dendrogram** (choice of distance and linkage, tips coloured by group).
@@ -110,7 +117,7 @@ All figures pass through a single `theme_publication()` and export at 300 dpi:
 ```r
 install.packages(c("shiny", "DT", "ggplot2", "dplyr", "tidyr", "scales",
                    "moments", "car", "FSA", "ppcor", "vegan", "survival",
-                   "pwr", "ggsignif", "patchwork", "ggdendro", "ggrepel",
+                   "pwr", "drc", "ggsignif", "patchwork", "ggdendro", "ggrepel",
                    "svglite", "readxl"))
 shiny::runApp("app.R")
 ```
