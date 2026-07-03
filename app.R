@@ -21,6 +21,9 @@
 #   pwr          - Champely S. Basic Functions for Power Analysis.
 #   ggsignif     - Ahlmann-Eltze C, Patil I. Significance brackets for ggplot2.
 #   patchwork    - Pedersen TL. The Composer of Plots (multi-panel figures).
+#   ggdendro     - de Vries A, Ripley BD. Dendrograms as ggplot2 data.
+#   ggrepel      - Slowikowski K. Repulsive text labels for ggplot2.
+#   svglite      - Wickham H et al. An SVG graphics device.
 #   scales       - Wickham H, Seidel D. Scale functions for visualization.
 #   readxl       - Wickham H, Bryan J. Read Excel files.
 
@@ -109,11 +112,6 @@ locked_axis <- function(axis = c("y", "x"), values, n = 6, pad = 0, sec = TRUE) 
 theme_panel_tag <- function() {
   theme(plot.tag = element_text(face = "bold", family = PUB_FONT, size = 16),
         plot.tag.position = c(0.02, 0.98))
-}
-
-save_publication <- function(plot, file, width = 6.5, height = 5) {
-  ggsave(file, plot = plot, width = width, height = height,
-         units = "in", dpi = 300, bg = "white", device = "png")
 }
 
 # ---------------------------------------------------------------------------
@@ -248,6 +246,84 @@ transform_reco <- function(m) {
   if (!length(msgs))
     msgs <- list(list(txt = "No transformation looks necessary: variables are on comparable scales and not strongly skewed. Standardize only if a specific method requires it.", sev = "ok"))
   msgs
+}
+
+# Diverging colorblind-safe fill for heatmaps / z-scores (blue low, orange high).
+heat_fill <- function(limit, name = "z-score")
+  scale_fill_gradient2(low = "#0072B2", mid = "white", high = "#D55E00",
+                       midpoint = 0, limits = c(-limit, limit), name = name,
+                       oob = scales::squish)
+
+# Per-feature differential expression between two groups.
+de_table <- function(X, group, method = c("t", "wilcox")) {
+  method <- match.arg(method); lv <- levels(group)
+  g1 <- group == lv[1]; g2 <- group == lv[2]
+  rows <- lapply(colnames(X), function(f) {
+    x <- X[g1, f]; y <- X[g2, f]; x <- x[is.finite(x)]; y <- y[is.finite(y)]
+    if (length(x) < 2 || length(y) < 2) return(NULL)
+    p <- tryCatch(if (method == "t") stats::t.test(x, y)$p.value
+                  else stats::wilcox.test(x, y, exact = FALSE)$p.value, error = function(e) NA_real_)
+    m1 <- mean(x); m2 <- mean(y)
+    data.frame(Feature = f, mean_1 = m1, mean_2 = m2,
+               log2FC = if (m1 > 0 && m2 > 0) log2(m2 / m1) else NA_real_,
+               meanDiff = m2 - m1, p = p)
+  })
+  d <- do.call(rbind, rows); d$p_adj <- stats::p.adjust(d$p, "BH"); d
+}
+
+# Clustered heatmap with an optional sample dendrogram and group annotation bar.
+heatmap_figure <- function(X, group = NULL, scale = c("feature", "sample", "none"),
+                           cluster_samples = TRUE, cluster_features = TRUE,
+                           show_values = FALSE) {
+  scale <- match.arg(scale)
+  X <- as.matrix(X); storage.mode(X) <- "double"
+  Xs <- switch(scale, feature = scale(X), sample = t(scale(t(X))), none = X)
+  Xs[!is.finite(Xs)] <- 0
+  hc_s <- if (cluster_samples && nrow(Xs) > 2) stats::hclust(stats::dist(Xs)) else NULL
+  hc_f <- if (cluster_features && ncol(Xs) > 2) stats::hclust(stats::dist(t(Xs))) else NULL
+  s_ord <- if (!is.null(hc_s)) hc_s$order else seq_len(nrow(Xs))
+  f_ord <- if (!is.null(hc_f)) hc_f$order else seq_len(ncol(Xs))
+  snames <- rownames(X) %||% as.character(seq_len(nrow(X)))
+  fnames <- colnames(X)
+  H <- Xs[s_ord, f_ord, drop = FALSE]
+  n <- length(s_ord); p <- length(f_ord); lim <- max(abs(H), 1e-9)
+  df <- data.frame(xi = rep(seq_len(n), times = p), yi = rep(seq_len(p), each = n),
+                   value = as.vector(H))
+  show_s <- n <= 45; show_f <- p <= 60
+  hm <- ggplot(df, aes(xi, yi, fill = value)) +
+    geom_tile(colour = "grey85", linewidth = pt_to_mm(0.2)) +
+    heat_fill(lim) +
+    scale_x_continuous(expand = c(0, 0), breaks = if (show_s) seq_len(n) else NULL,
+                       labels = if (show_s) snames[s_ord] else NULL,
+                       sec.axis = dup_axis(name = NULL, labels = NULL)) +
+    scale_y_continuous(expand = c(0, 0), breaks = if (show_f) seq_len(p) else NULL,
+                       labels = if (show_f) fnames[f_ord] else NULL,
+                       sec.axis = dup_axis(name = NULL, labels = NULL)) +
+    labs(x = NULL, y = NULL, tag = "A") + theme_publication() + theme_panel_tag() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 8),
+          axis.text.y = element_text(size = 8))
+  if (show_values) hm <- hm + geom_text(aes(label = sprintf("%.1f", value)),
+                                        family = PUB_FONT, size = 2.4)
+  if (!has_pkg("patchwork") || !has_pkg("ggdendro") || is.null(hc_s)) return(hm)
+  seg <- ggdendro::dendro_data(hc_s, type = "rectangle")$segments
+  top <- ggplot(seg) +
+    geom_segment(aes(x = x, y = y, xend = xend, yend = yend), colour = "black", linewidth = pt_to_mm(0.8)) +
+    scale_x_continuous(expand = c(0, 0), limits = c(0.5, n + 0.5)) +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.03))) +
+    labs(x = NULL, y = NULL) + theme_void()
+  if (!is.null(group)) {
+    ann <- data.frame(xi = seq_len(n), grp = factor(group[s_ord]))
+    abar <- ggplot(ann, aes(xi, 1, fill = grp)) +
+      geom_tile() + pub_colour("Group") +
+      scale_x_continuous(expand = c(0, 0), limits = c(0.5, n + 0.5)) +
+      scale_y_continuous(expand = c(0, 0)) +
+      labs(x = NULL, y = NULL) + theme_void() +
+      theme(legend.position = "right", legend.text = element_text(family = PUB_FONT),
+            legend.title = element_text(family = PUB_FONT))
+    return(patchwork::wrap_plots(top, abar, hm, ncol = 1,
+                                 heights = c(0.16, 0.05, 0.79)))
+  }
+  patchwork::wrap_plots(top, hm, ncol = 1, heights = c(0.18, 0.82))
 }
 
 # ---------------------------------------------------------------------------
@@ -584,6 +660,54 @@ ui <- navbarPage(
     )
   ),
 
+  # --- Bioinformatics -----------------------------------------------------
+  navbarMenu("Bioinformatics",
+    tabPanel("Heatmap",
+      sidebarLayout(
+        sidebarPanel(width = 3,
+          uiOutput("hm_vars_ui"),
+          selectInput("hm_group", "Annotation / group (optional)", choices = c("None" = "")),
+          selectInput("hm_scale", "Scaling",
+            c("Z-score each feature (recommended)" = "feature",
+              "Z-score each sample" = "sample", "None (raw values)" = "none")),
+          checkboxInput("hm_cluster_s", "Cluster samples (columns)", TRUE),
+          checkboxInput("hm_cluster_f", "Cluster features (rows)", TRUE),
+          checkboxInput("hm_values", "Print values in cells", FALSE),
+          downloadButton("dl_hm", "Download figure")),
+        mainPanel(width = 9,
+          uiOutput("hm_notes"), plotOutput("hm_plot", height = "600px"))
+      )
+    ),
+    tabPanel("Differential Expression",
+      sidebarLayout(
+        sidebarPanel(width = 3,
+          uiOutput("de_vars_ui"),
+          selectInput("de_group", "Group (2 levels)", choices = NULL),
+          selectInput("de_method", "Per-feature test", c("t-test" = "t", "Mann-Whitney" = "wilcox")),
+          numericInput("de_alpha", "Adjusted p threshold", 0.05, min = 0.001, max = 0.5, step = 0.01),
+          numericInput("de_fc", "Fold-change threshold (log2)", 1, min = 0, step = 0.25),
+          numericInput("de_label", "Label top N features", 8, min = 0, max = 40),
+          downloadButton("dl_volcano", "Download figure")),
+        mainPanel(width = 9,
+          h4("Volcano plot"), uiOutput("de_notes"), plotOutput("de_plot", height = "520px"),
+          tags$hr(), h4("Results (BH-adjusted)"), DTOutput("de_tbl"),
+          downloadButton("dl_de_csv", "Download results (CSV)"))
+      )
+    ),
+    tabPanel("Sample Clustering",
+      sidebarLayout(
+        sidebarPanel(width = 3,
+          uiOutput("cl_vars_ui"),
+          selectInput("cl_group", "Colour leaves by (optional)", choices = c("None" = "")),
+          selectInput("cl_dist", "Distance", c("euclidean", "manhattan", "maximum")),
+          selectInput("cl_link", "Linkage", c("complete", "average", "ward.D2", "single")),
+          downloadButton("dl_cl", "Download figure")),
+        mainPanel(width = 9,
+          uiOutput("cl_notes"), plotOutput("cl_plot", height = "520px"))
+      )
+    )
+  ),
+
   # --- Compare methods ----------------------------------------------------
   tabPanel("Compare Methods",
     sidebarLayout(
@@ -626,6 +750,26 @@ ui <- navbarPage(
         h4("Power / sample size"), uiOutput("pwr_interp"), verbatimTextOutput("pwr_result"),
         tags$hr(), plotOutput("pwr_plot", height = "420px"))
     )
+  ),
+
+  # --- Export settings ----------------------------------------------------
+  tabPanel("Export",
+    fluidRow(
+      column(4,
+        h4("Figure export settings"),
+        selectInput("fig_format", "File format",
+          c("PNG (raster)" = "png", "PDF (vector, best for journals)" = "pdf",
+            "SVG (vector, editable)" = "svg", "TIFF (raster, journals)" = "tiff")),
+        numericInput("fig_dpi", "Resolution (dpi, raster only)", 300, min = 72, max = 1200, step = 50),
+        note("These apply to every <b>Download figure</b> button in the app. Choose <b>PDF</b> or <b>SVG</b> for publications: they stay razor-sharp at any size and can be edited in Illustrator or Inkscape. Use <b>PNG</b>/<b>TIFF</b> at 300+ dpi for posters and Word documents.", "info")),
+      column(8,
+        h4("How to get frictionless publication figures"),
+        note("1. Load or paste your data, then pick the analysis tab you need.", "ok"),
+        note("2. Every figure already follows publication conventions (Wong colorblind-safe palette, Georgia serif, clean spines with inward ticks, tick-locked axes, lettered panels).", "ok"),
+        note("3. Set your preferred format above, then click the tab's <b>Download figure</b> button. The file name reflects your analysis so nothing gets overwritten.", "ok"),
+        note("4. For a multi-panel figure (e.g. Compare Methods), download the composed PDF and drop it straight into your manuscript, or open the SVG to fine-tune.", "ok"),
+        note("Install the <b>Georgia</b> font on the machine running R so text renders exactly as intended; otherwise the theme falls back to the default serif.", "warn"))
+    )
   )
 )
 
@@ -636,6 +780,21 @@ ui <- navbarPage(
 server <- function(input, output, session) {
 
   rv <- reactiveValues(data = NULL)
+
+  # Format-aware figure download. Honours the global Export settings so any
+  # figure can be saved as raster (PNG/TIFF) or vector (PDF/SVG) at a chosen dpi.
+  dl_handler <- function(stem, plotFun, width = 6.5, height = 5) downloadHandler(
+    filename = function() {
+      fmt <- tolower(input$fig_format %||% "png")
+      paste0(if (is.function(stem)) stem() else stem, ".", fmt)
+    },
+    content = function(file) {
+      fmt <- tolower(input$fig_format %||% "png")
+      w <- if (is.function(width)) width() else width
+      h <- if (is.function(height)) height() else height
+      ggplot2::ggsave(file, plotFun(), width = w, height = h, units = "in",
+                      dpi = as.numeric(input$fig_dpi %||% 300), bg = "white", device = fmt)
+    })
 
   observeEvent(input$file, {
     req(input$file)
@@ -723,6 +882,8 @@ server <- function(input, output, session) {
     upd("cmp_ord_group", c("None" = "", fv))
     upd("cmp_y", nv, nv[1]); upd("cmp_g", fv, fv[1])
     upd("cmp_x1", nv, nv[1]); upd("cmp_x2", nv, nv[2] %||% nv[1])
+    upd("hm_group", c("None" = "", fv)); upd("de_group", fv, fv[1])
+    upd("cl_group", c("None" = "", fv))
   })
 
   # --- Data health --------------------------------------------------------
@@ -829,8 +990,7 @@ server <- function(input, output, session) {
     if (is.null(grp)) p <- p + guides(fill = "none", colour = "none")
     p })
   output$dist_plot <- renderPlot(dist_plot())
-  output$dl_dist <- downloadHandler(function() paste0("distribution_", input$dist_var, ".png"),
-                                    function(f) save_publication(dist_plot(), f))
+  output$dl_dist <- dl_handler(function() paste0("distribution_", input$dist_var), dist_plot)
 
   # --- Transform / standardize -------------------------------------------
   output$tr_vars_ui <- renderUI(checkboxGroupInput("tr_vars", "Columns to transform",
@@ -983,8 +1143,7 @@ server <- function(input, output, session) {
     }
     p })
   output$gc_plot <- renderPlot(gc_plot())
-  output$dl_box <- downloadHandler(function() paste0("comparison_", input$gc_response, ".png"),
-                                   function(f) save_publication(gc_plot(), f))
+  output$dl_box <- dl_handler(function() paste0("comparison_", input$gc_response), gc_plot)
 
   # --- 3+ group comparison ------------------------------------------------
   av_data <- reactive({ req(input$av_response, input$av_group)
@@ -1072,8 +1231,7 @@ server <- function(input, output, session) {
     }
     p })
   output$av_plot <- renderPlot(av_plot())
-  output$dl_avbox <- downloadHandler(function() paste0("anova_", input$av_response, ".png"),
-                                     function(f) save_publication(av_plot(), f))
+  output$dl_avbox <- dl_handler(function() paste0("anova_", input$av_response), av_plot)
 
   # --- Two-way / ANCOVA ---------------------------------------------------
   tw_data <- reactive({ req(input$tw_response, input$tw_f1, input$tw_f2)
@@ -1113,7 +1271,7 @@ server <- function(input, output, session) {
     }
     p + pub_colour() + theme_publication() + theme_panel_tag() })
   output$tw_plot <- renderPlot(tw_plot())
-  output$dl_tw <- downloadHandler(function() "twoway.png", function(f) save_publication(tw_plot(), f))
+  output$dl_tw <- dl_handler("twoway", tw_plot)
 
   # --- Contingency --------------------------------------------------------
   ct_table <- reactive({ req(input$ct_row, input$ct_col)
@@ -1139,7 +1297,7 @@ server <- function(input, output, session) {
       labs(x = input$ct_row, y = "Count", fill = input$ct_col, tag = "A") + pub_colour() +
       locked_axis("y", c(0, dd$n), n = 6) + theme_publication() + theme_panel_tag() })
   output$ct_plot <- renderPlot(ct_plot())
-  output$dl_ct <- downloadHandler(function() "contingency.png", function(f) save_publication(ct_plot(), f))
+  output$dl_ct <- dl_handler("contingency", ct_plot)
 
   # --- Risk & odds --------------------------------------------------------
   rr_table <- reactive({ req(input$rr_exp, input$rr_out)
@@ -1206,7 +1364,7 @@ server <- function(input, output, session) {
       locked_axis("x", c(0, 1), n = 5) + locked_axis("y", c(0, 1), n = 5) +
       coord_fixed() + theme_publication() + theme_panel_tag() })
   output$dx_plot <- renderPlot(dx_plot())
-  output$dl_roc <- downloadHandler(function() "roc.png", function(f) save_publication(dx_plot(), f, 6, 6))
+  output$dl_roc <- dl_handler("roc", dx_plot, 6, 6)
 
   # --- Linear regression --------------------------------------------------
   output$reg_x_ui <- renderUI(checkboxGroupInput("reg_x", "Predictors",
@@ -1246,7 +1404,7 @@ server <- function(input, output, session) {
         theme_publication() + theme_panel_tag()
     } })
   output$reg_plot <- renderPlot(reg_plot())
-  output$dl_reg <- downloadHandler(function() "regression.png", function(f) save_publication(reg_plot(), f))
+  output$dl_reg <- dl_handler("regression", reg_plot)
 
   # --- Logistic regression ------------------------------------------------
   output$logit_x_ui <- renderUI(checkboxGroupInput("logit_x", "Predictors",
@@ -1278,7 +1436,7 @@ server <- function(input, output, session) {
   output$logit_plot <- renderPlot({ tryCatch(logit_plot(), error = function(e)
     ggplot() + annotate("text", 0, 0, label = "Probability curve shown for a single numeric predictor.",
                         family = PUB_FONT, size = 5) + theme_void()) })
-  output$dl_logit <- downloadHandler(function() "logistic.png", function(f) save_publication(logit_plot(), f))
+  output$dl_logit <- dl_handler("logistic", logit_plot)
 
   # --- Poisson GLM --------------------------------------------------------
   output$pois_x_ui <- renderUI(checkboxGroupInput("pois_x", "Predictors",
@@ -1335,7 +1493,7 @@ server <- function(input, output, session) {
       labs(x = NULL, y = NULL, tag = "A") + coord_fixed() +
       theme_publication() + theme_panel_tag() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) })
   output$cor_plot <- renderPlot(cor_plot())
-  output$dl_cor <- downloadHandler(function() "correlation.png", function(f) save_publication(cor_plot(), f, 6.5, 6))
+  output$dl_cor <- dl_handler("correlation", cor_plot, 6.5, 6)
 
   # --- Survival -----------------------------------------------------------
   surv_ok <- reactive(has_pkg("survival"))
@@ -1373,7 +1531,7 @@ server <- function(input, output, session) {
       theme_publication() + theme_panel_tag() +
       (if (nlevels(surv_data()$grp) < 2) guides(colour = "none") else NULL) })
   output$surv_plot <- renderPlot({ if (!surv_ok()) return(NULL); surv_plot() })
-  output$dl_surv <- downloadHandler(function() "survival.png", function(f) save_publication(surv_plot(), f))
+  output$dl_surv <- dl_handler("survival", surv_plot)
 
   # --- Diversity ----------------------------------------------------------
   output$div_vars_ui <- renderUI(checkboxGroupInput("div_vars", "Species / abundance columns",
@@ -1406,8 +1564,7 @@ server <- function(input, output, session) {
       return(ggplot() + annotate("text", 0, 0, label = "Choose a grouping factor to compare diversity across groups.",
                                  family = PUB_FONT, size = 5) + theme_void())
     div_plot() })
-  output$dl_div <- downloadHandler(function() paste0("diversity_", input$div_index, ".png"),
-                                   function(f) save_publication(div_plot(), f))
+  output$dl_div <- dl_handler(function() paste0("diversity_", input$div_index), div_plot)
 
   # --- Community comparison ----------------------------------------------
   output$beta_vars_ui <- renderUI(checkboxGroupInput("beta_vars", "Species / abundance columns",
@@ -1504,8 +1661,112 @@ server <- function(input, output, session) {
     if (nlevels(d$grp) > 1) p + stat_ellipse(type = "norm", linewidth = pt_to_mm(1.0), show.legend = FALSE)
     else p + guides(colour = "none", fill = "none") })
   output$ord_plot <- renderPlot(ord_plot())
-  output$dl_ord <- downloadHandler(function() paste0("ordination_", input$ord_method, ".png"),
-                                   function(f) save_publication(ord_plot(), f, 6.5, 6))
+  output$dl_ord <- dl_handler(function() paste0("ordination_", input$ord_method), ord_plot, 6.5, 6)
+
+  # --- Bioinformatics: heatmap -------------------------------------------
+  output$hm_vars_ui <- renderUI(checkboxGroupInput("hm_vars", "Features (numeric columns)",
+                                  choices = numeric_vars(),
+                                  selected = grep("^Sp", numeric_vars(), value = TRUE) %||% numeric_vars()))
+  hm_input <- reactive({ req(input$hm_vars); if (length(input$hm_vars) < 2) return(NULL)
+    df <- rv$data; m <- df[, input$hm_vars, drop = FALSE]; keep <- stats::complete.cases(m)
+    grp <- if (nzchar(input$hm_group %||% "")) df[[input$hm_group]][keep] else NULL
+    list(m = m[keep, , drop = FALSE], grp = grp) })
+  hm_plot <- reactive({ h <- hm_input(); req(h)
+    heatmap_figure(h$m, group = h$grp, scale = input$hm_scale,
+                   cluster_samples = isTRUE(input$hm_cluster_s),
+                   cluster_features = isTRUE(input$hm_cluster_f),
+                   show_values = isTRUE(input$hm_values)) })
+  output$hm_plot <- renderPlot({ if (is.null(hm_input()))
+      return(ggplot() + annotate("text", 0, 0, label = "Select at least 2 feature columns.", family = PUB_FONT, size = 5) + theme_void())
+    hm_plot() })
+  output$hm_notes <- renderUI(note("Rows are features, columns are samples. Z-scoring each feature (default) puts every variable on a common scale so colour reflects relative high/low, not absolute magnitude. Clustering groups similar samples/features together; the top dendrogram shows how samples relate. Orange = above average, blue = below.", "info"))
+  output$dl_hm <- dl_handler("heatmap", hm_plot, width = 8, height = 6.5)
+
+  # --- Bioinformatics: differential expression ---------------------------
+  output$de_vars_ui <- renderUI(checkboxGroupInput("de_vars", "Features to test",
+                                  choices = numeric_vars(),
+                                  selected = grep("^Sp", numeric_vars(), value = TRUE) %||% numeric_vars()))
+  de_data <- reactive({ req(input$de_vars, input$de_group); length(input$de_vars) >= 1 || return(NULL)
+    df <- rv$data; cols <- c(input$de_vars, input$de_group)
+    d <- df[stats::complete.cases(df[cols]), cols, drop = FALSE]
+    g <- factor(d[[input$de_group]]); req(nlevels(g) == 2)
+    list(X = as.matrix(d[, input$de_vars, drop = FALSE]), g = g, lv = levels(g)) })
+  de_res <- reactive({ dd <- de_data(); req(dd)
+    r <- de_table(dd$X, dd$g, method = input$de_method)
+    r$effect <- if (all(is.finite(r$log2FC))) r$log2FC else r$meanDiff
+    r$effect_name <- if (all(is.finite(r$log2FC))) "log2 fold change" else "mean difference"
+    fc <- input$de_fc %||% 1; al <- input$de_alpha %||% 0.05
+    r$Change <- ifelse(r$p_adj < al & r$effect >= fc, "Up",
+                ifelse(r$p_adj < al & r$effect <= -fc, "Down", "n.s."))
+    r })
+  output$de_tbl <- renderDT({ r <- de_res(); req(r)
+    tab <- r[order(r$p_adj), c("Feature", "mean_1", "mean_2", "log2FC", "meanDiff", "p", "p_adj", "Change")]
+    tab[2:7] <- lapply(tab[2:7], signif, 4)
+    datatable(tab, options = list(pageLength = 12, scrollX = TRUE), rownames = FALSE) })
+  output$de_notes <- renderUI({ dd <- de_data(); r <- de_res(); req(dd, r)
+    nsig <- sum(r$Change != "n.s.", na.rm = TRUE)
+    tagList(
+      note(sprintf("Each feature is compared between <b>%s</b> and <b>%s</b> with a %s and Benjamini-Hochberg correction for testing many features at once.",
+                   dd$lv[1], dd$lv[2], if (input$de_method == "t") "t-test" else "Mann-Whitney test"), "info"),
+      note(sprintf("<b>%d</b> feature(s) pass both thresholds (adjusted p &lt; %.2g and |%s| ≥ %.2g): orange = higher in %s, blue = higher in %s.",
+                   nsig, input$de_alpha %||% 0.05, r$effect_name[1], input$de_fc %||% 1, dd$lv[2], dd$lv[1]),
+           if (nsig > 0) "ok" else "warn")) })
+  de_plot <- reactive({ r <- de_res(); req(r)
+    r <- r[is.finite(r$effect) & is.finite(r$p_adj), ]
+    r$logp <- -log10(pmax(r$p_adj, .Machine$double.xmin))
+    fc <- input$de_fc %||% 1; al <- input$de_alpha %||% 0.05
+    cols <- c(Up = "#D55E00", Down = "#0072B2", "n.s." = "grey70")
+    # Pad the ranges so every point, threshold line, and repel label fits inside.
+    xr <- range(c(r$effect, -fc, fc)); xr <- xr + c(-1, 1) * 0.10 * diff(xr)
+    yr <- c(0, max(c(r$logp, -log10(al))) * 1.15)
+    p <- ggplot(r, aes(effect, logp, colour = Change)) +
+      geom_vline(xintercept = c(-fc, fc), linetype = "dashed", colour = "grey60", linewidth = pt_to_mm(0.8)) +
+      geom_hline(yintercept = -log10(al), linetype = "dashed", colour = "grey60", linewidth = pt_to_mm(0.8)) +
+      geom_point(size = 2, alpha = 0.8) +
+      scale_colour_manual(values = cols, name = NULL) +
+      labs(x = r$effect_name[1], y = expression(-log[10]~"adjusted p"), tag = "A") +
+      locked_axis("x", xr, n = 6) + locked_axis("y", yr, n = 6) +
+      theme_publication() + theme_panel_tag()
+    nlab <- input$de_label %||% 0
+    if (nlab > 0 && has_pkg("ggrepel")) { top <- r[r$Change != "n.s.", ]
+      top <- head(top[order(top$p_adj), ], nlab)
+      if (nrow(top)) p <- p + ggrepel::geom_text_repel(data = top, aes(label = Feature),
+        family = PUB_FONT, size = 3.4, colour = "black", max.overlaps = 50, min.segment.length = 0) }
+    p })
+  output$de_plot <- renderPlot(de_plot())
+  output$dl_volcano <- dl_handler("volcano", de_plot, width = 6.5, height = 5.5)
+  output$dl_de_csv <- downloadHandler(function() "differential_expression.csv",
+    function(f) utils::write.csv(de_res()[order(de_res()$p_adj), ], f, row.names = FALSE))
+
+  # --- Bioinformatics: sample clustering ---------------------------------
+  output$cl_vars_ui <- renderUI(checkboxGroupInput("cl_vars", "Features (numeric columns)",
+                                  choices = numeric_vars(),
+                                  selected = grep("^Sp", numeric_vars(), value = TRUE) %||% numeric_vars()))
+  cl_data <- reactive({ req(input$cl_vars); length(input$cl_vars) >= 2 || return(NULL)
+    df <- rv$data; m <- df[, input$cl_vars, drop = FALSE]; keep <- stats::complete.cases(m); m <- m[keep, , drop = FALSE]
+    grp <- if (nzchar(input$cl_group %||% "")) factor(df[[input$cl_group]][keep]) else NULL
+    list(m = scale(as.matrix(m)), grp = grp,
+         labels = (rownames(df)[keep]) %||% as.character(which(keep))) })
+  cl_plot <- reactive({ cd <- cl_data(); req(cd); req(has_pkg("ggdendro"))
+    hc <- stats::hclust(stats::dist(cd$m, method = input$cl_dist), method = input$cl_link)
+    dd <- ggdendro::dendro_data(hc, type = "rectangle")
+    lab <- dd$labels; lab$grp <- if (!is.null(cd$grp)) cd$grp[hc$order] else factor("All")
+    p <- ggplot() +
+      geom_segment(data = dd$segments, aes(x = x, y = y, xend = xend, yend = yend),
+                   colour = "black", linewidth = pt_to_mm(0.8)) +
+      geom_point(data = lab, aes(x = x, y = 0, colour = grp), size = 2.6) +
+      labs(x = NULL, y = "Height", tag = "A", colour = input$cl_group) + pub_colour() +
+      scale_x_continuous(breaks = NULL, expand = expansion(mult = 0.02)) +
+      locked_axis("y", c(0, max(dd$segments$y) * 1.05), n = 6) +
+      theme_publication() + theme_panel_tag() +
+      theme(axis.ticks.x = element_blank())
+    if (is.null(cd$grp)) p <- p + guides(colour = "none")
+    p })
+  output$cl_plot <- renderPlot({ if (is.null(cl_data()))
+      return(ggplot() + annotate("text", 0, 0, label = "Select at least 2 feature columns.", family = PUB_FONT, size = 5) + theme_void())
+    cl_plot() })
+  output$cl_notes <- renderUI(note("Samples are standardized, then grouped by similarity: samples joined lower in the tree are more alike. Colour the tips by a known group to see whether your samples cluster the way you expect. Ward or complete linkage give compact, interpretable clusters.", "info"))
+  output$dl_cl <- dl_handler("clustering", cl_plot, width = 7, height = 5)
 
   # --- Compare methods ----------------------------------------------------
   output$cmp_ord_vars_ui <- renderUI(checkboxGroupInput("cmp_ord_vars", "Matrix variables",
@@ -1629,8 +1890,8 @@ server <- function(input, output, session) {
       locked_axis("x", d$x, n = 6, pad = 0.03) + locked_axis("y", d$y, n = 6, pad = 0.03) +
       theme_publication() + theme_panel_tag() })
   output$cmp_plot <- renderPlot(cmp_plot())
-  output$dl_cmp <- downloadHandler(function() paste0("compare_", input$cmp_type, ".png"),
-    function(f) save_publication(cmp_plot(), f, width = if (input$cmp_type == "ord") 13 else 6.5, height = 5))
+  output$dl_cmp <- dl_handler(function() paste0("compare_", input$cmp_type), cmp_plot,
+    width = function() if (input$cmp_type == "ord") 13 else 6.5, height = 5)
 
   # --- Power --------------------------------------------------------------
   pwr_res <- reactive({ if (!has_pkg("pwr")) return(NULL)

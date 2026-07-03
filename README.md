@@ -65,6 +65,18 @@ regression.
 Pielou evenness), community comparison (PERMANOVA, ANOSIM, Mantel), and
 ordination (PCA, PCoA, CA, DCA, NMDS, RDA).
 
+**Bioinformatics** — a **clustered heatmap** (per-feature or per-sample
+z-scoring, sample dendrogram, group annotation bar, diverging colorblind-safe
+scale), a **differential-expression volcano plot** (per-feature t-test or
+Mann-Whitney with Benjamini-Hochberg correction, fold-change/significance
+thresholds, labelled hits, downloadable results table), and a **sample
+clustering dendrogram** (choice of distance and linkage, tips coloured by
+group).
+
+**Export** — one place to choose the file format for *every* Download-figure
+button: PNG or TIFF (raster, pick the dpi) or PDF/SVG (vector, razor-sharp and
+editable in Illustrator/Inkscape for manuscripts).
+
 **Power** — power / sample-size solving for t-tests, ANOVA, two proportions, and
 correlation, with a power-vs-n curve and effect-size conventions.
 
@@ -89,7 +101,8 @@ All figures pass through a single `theme_publication()` and export at 300 dpi:
 ```r
 install.packages(c("shiny", "DT", "ggplot2", "dplyr", "tidyr", "scales",
                    "moments", "car", "FSA", "ppcor", "vegan", "survival",
-                   "pwr", "ggsignif", "patchwork", "readxl"))
+                   "pwr", "ggsignif", "patchwork", "ggdendro", "ggrepel",
+                   "svglite", "readxl"))
 shiny::runApp("app.R")
 ```
 
