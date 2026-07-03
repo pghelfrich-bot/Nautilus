@@ -109,8 +109,8 @@ locked_axis <- function(axis = c("y", "x"), values, n = 6, pad = 0, sec = TRUE) 
 }
 
 # Bold uppercase panel label anchored to the top-left; pair with labs(tag = "A").
-theme_panel_tag <- function() {
-  theme(plot.tag = element_text(face = "bold", family = PUB_FONT, size = 16),
+theme_panel_tag <- function(family = PUB_FONT, size = 16) {
+  theme(plot.tag = element_text(face = "bold", family = family, size = size),
         plot.tag.position = c(0.02, 0.98))
 }
 
@@ -274,7 +274,7 @@ de_table <- function(X, group, method = c("t", "wilcox")) {
 # Clustered heatmap with an optional sample dendrogram and group annotation bar.
 heatmap_figure <- function(X, group = NULL, scale = c("feature", "sample", "none"),
                            cluster_samples = TRUE, cluster_features = TRUE,
-                           show_values = FALSE) {
+                           show_values = FALSE, font = PUB_FONT, base_size = 13, tags = TRUE) {
   scale <- match.arg(scale)
   X <- as.matrix(X); storage.mode(X) <- "double"
   Xs <- switch(scale, feature = scale(X), sample = t(scale(t(X))), none = X)
@@ -299,11 +299,13 @@ heatmap_figure <- function(X, group = NULL, scale = c("feature", "sample", "none
     scale_y_continuous(expand = c(0, 0), breaks = if (show_f) seq_len(p) else NULL,
                        labels = if (show_f) fnames[f_ord] else NULL,
                        sec.axis = dup_axis(name = NULL, labels = NULL)) +
-    labs(x = NULL, y = NULL, tag = "A") + theme_publication() + theme_panel_tag() +
+    labs(x = NULL, y = NULL, tag = if (tags) "A" else NULL) +
+    theme_publication(base_size = base_size, base_family = font) +
+    (if (tags) theme_panel_tag(font) else theme(plot.tag = element_blank())) +
     theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 8),
           axis.text.y = element_text(size = 8))
   if (show_values) hm <- hm + geom_text(aes(label = sprintf("%.1f", value)),
-                                        family = PUB_FONT, size = 2.4)
+                                        family = font, size = 2.4)
   if (!has_pkg("patchwork") || !has_pkg("ggdendro") || is.null(hc_s)) return(hm)
   seg <- ggdendro::dendro_data(hc_s, type = "rectangle")$segments
   top <- ggplot(seg) +
@@ -318,8 +320,8 @@ heatmap_figure <- function(X, group = NULL, scale = c("feature", "sample", "none
       scale_x_continuous(expand = c(0, 0), limits = c(0.5, n + 0.5)) +
       scale_y_continuous(expand = c(0, 0)) +
       labs(x = NULL, y = NULL) + theme_void() +
-      theme(legend.position = "right", legend.text = element_text(family = PUB_FONT),
-            legend.title = element_text(family = PUB_FONT))
+      theme(legend.position = "right", legend.text = element_text(family = font),
+            legend.title = element_text(family = font))
     return(patchwork::wrap_plots(top, abar, hm, ncol = 1,
                                  heights = c(0.16, 0.05, 0.79)))
   }
@@ -414,6 +416,20 @@ ui <- navbarPage(
         mainPanel(width = 9,
           h4("Recommendation for your data"), uiOutput("tr_reco"),
           h4("Preview"), DTOutput("tr_preview"))
+      )
+    ),
+    tabPanel("PCA Explorer",
+      sidebarLayout(
+        sidebarPanel(width = 3,
+          uiOutput("pca_vars_ui"),
+          selectInput("pca_group", "Colour by (optional)", choices = c("None" = "")),
+          checkboxInput("pca_scale", "Scale variables (recommended)", TRUE),
+          radioButtons("pca_fig", "Figure", c("Biplot" = "biplot", "Scree plot" = "scree")),
+          sliderInput("pca_arrows", "Loading arrows to show", min = 0, max = 20, value = 8),
+          downloadButton("dl_pca", "Download figure")),
+        mainPanel(width = 9,
+          uiOutput("pca_notes"), plotOutput("pca_plot", height = "520px"),
+          tags$hr(), h4("Variable loadings"), DTOutput("pca_loadings"))
       )
     )
   ),
@@ -687,9 +703,13 @@ ui <- navbarPage(
           numericInput("de_alpha", "Adjusted p threshold", 0.05, min = 0.001, max = 0.5, step = 0.01),
           numericInput("de_fc", "Fold-change threshold (log2)", 1, min = 0, step = 0.25),
           numericInput("de_label", "Label top N features", 8, min = 0, max = 40),
-          downloadButton("dl_volcano", "Download figure")),
+          radioButtons("de_plottype", "Plot type", c("Volcano" = "volcano", "MA plot" = "ma")),
+          downloadButton("dl_volcano", "Download figure"),
+          tags$hr(),
+          actionButton("de_to_heatmap", "Send significant features to Heatmap →",
+                       class = "btn-success btn-block")),
         mainPanel(width = 9,
-          h4("Volcano plot"), uiOutput("de_notes"), plotOutput("de_plot", height = "520px"),
+          h4("Differential expression"), uiOutput("de_notes"), plotOutput("de_plot", height = "520px"),
           tags$hr(), h4("Results (BH-adjusted)"), DTOutput("de_tbl"),
           downloadButton("dl_de_csv", "Download results (CSV)"))
       )
@@ -752,23 +772,38 @@ ui <- navbarPage(
     )
   ),
 
-  # --- Export settings ----------------------------------------------------
-  tabPanel("Export",
+  # --- Export & style -----------------------------------------------------
+  tabPanel("Export & Style",
     fluidRow(
       column(4,
-        h4("Figure export settings"),
+        h4("Appearance"),
+        selectInput("fig_font", "Font",
+          c("Sans-serif (Arial / Helvetica)" = "sans", "Serif (Times)" = "serif",
+            "Helvetica" = "Helvetica", "Palatino" = "Palatino",
+            "Times New Roman" = "Times New Roman", "Georgia" = "Georgia"),
+          selected = "sans"),
+        sliderInput("fig_fontsize", "Base text size", min = 8, max = 20, value = 13, step = 1),
+        checkboxInput("fig_tags", "Show panel labels (A, B, ...)", TRUE),
+        note("Changes preview live on every figure in the app.", "info")),
+      column(4,
+        h4("Export"),
         selectInput("fig_format", "File format",
           c("PNG (raster)" = "png", "PDF (vector, best for journals)" = "pdf",
             "SVG (vector, editable)" = "svg", "TIFF (raster, journals)" = "tiff")),
         numericInput("fig_dpi", "Resolution (dpi, raster only)", 300, min = 72, max = 1200, step = 50),
-        note("These apply to every <b>Download figure</b> button in the app. Choose <b>PDF</b> or <b>SVG</b> for publications: they stay razor-sharp at any size and can be edited in Illustrator or Inkscape. Use <b>PNG</b>/<b>TIFF</b> at 300+ dpi for posters and Word documents.", "info")),
-      column(8,
-        h4("How to get frictionless publication figures"),
-        note("1. Load or paste your data, then pick the analysis tab you need.", "ok"),
-        note("2. Every figure already follows publication conventions (Wong colorblind-safe palette, Georgia serif, clean spines with inward ticks, tick-locked axes, lettered panels).", "ok"),
-        note("3. Set your preferred format above, then click the tab's <b>Download figure</b> button. The file name reflects your analysis so nothing gets overwritten.", "ok"),
-        note("4. For a multi-panel figure (e.g. Compare Methods), download the composed PDF and drop it straight into your manuscript, or open the SVG to fine-tune.", "ok"),
-        note("Install the <b>Georgia</b> font on the machine running R so text renders exactly as intended; otherwise the theme falls back to the default serif.", "warn"))
+        radioButtons("fig_size", "Figure size",
+          c("Auto (per figure)" = "auto", "Single column (3.5 in)" = "single",
+            "Double column (7 in)" = "double", "Custom" = "custom")),
+        conditionalPanel("input.fig_size == 'custom'",
+          numericInput("fig_w", "Width (in)", 6.5, min = 1, max = 20, step = 0.5),
+          numericInput("fig_h", "Height (in)", 5, min = 1, max = 20, step = 0.5))),
+      column(4,
+        h4("Frictionless publication figures"),
+        note("1. Load or paste data, then open the analysis tab you need.", "ok"),
+        note("2. Every figure already follows publication conventions: Wong colorblind-safe palette, clean spines with inward ticks, tick-locked axes, lettered panels.", "ok"),
+        note("3. Set the font, size, format, and dimensions here once — they apply to every <b>Download figure</b> button. File names reflect the analysis so nothing is overwritten.", "ok"),
+        note("Vector <b>PDF</b>/<b>SVG</b> stay sharp at any size and open in Illustrator/Inkscape. <b>Single/Double column</b> presets match common journal widths while preserving each figure's aspect ratio.", "info"),
+        note("Sans-serif and Serif always render on any system. Named fonts (Helvetica, Palatino, ...) need that font installed, otherwise the graphics device substitutes the closest match.", "warn"))
     )
   )
 )
@@ -790,11 +825,24 @@ server <- function(input, output, session) {
     },
     content = function(file) {
       fmt <- tolower(input$fig_format %||% "png")
-      w <- if (is.function(width)) width() else width
-      h <- if (is.function(height)) height() else height
-      ggplot2::ggsave(file, plotFun(), width = w, height = h, units = "in",
+      w0 <- if (is.function(width)) width() else width
+      h0 <- if (is.function(height)) height() else height
+      dims <- switch(input$fig_size %||% "auto",
+        single = c(3.5, h0 * 3.5 / w0),
+        double = c(7,   h0 * 7   / w0),
+        custom = c(input$fig_w %||% w0, input$fig_h %||% h0),
+        c(w0, h0))
+      ggplot2::ggsave(file, plotFun(), width = dims[1], height = dims[2], units = "in",
                       dpi = as.numeric(input$fig_dpi %||% 300), bg = "white", device = fmt)
     })
+
+  # Live figure styling controlled from the Export tab; every plot reads these
+  # so changes redraw immediately.
+  pfont  <- reactive(input$fig_font %||% "Georgia")
+  psize  <- reactive(as.numeric(input$fig_fontsize %||% 13))
+  ptags  <- reactive(isTRUE(input$fig_tags %||% TRUE))
+  thm    <- reactive(theme_publication(base_size = psize(), base_family = pfont()))
+  tagthm <- reactive(if (ptags()) theme_panel_tag(pfont()) else theme(plot.tag = element_blank()))
 
   observeEvent(input$file, {
     req(input$file)
@@ -884,6 +932,7 @@ server <- function(input, output, session) {
     upd("cmp_x1", nv, nv[1]); upd("cmp_x2", nv, nv[2] %||% nv[1])
     upd("hm_group", c("None" = "", fv)); upd("de_group", fv, fv[1])
     upd("cl_group", c("None" = "", fv))
+    upd("pca_group", c("None" = "", fv))
   })
 
   # --- Data health --------------------------------------------------------
@@ -972,7 +1021,7 @@ server <- function(input, output, session) {
                          colour = if (!is.null(grp)) .data[[grp]] else NULL)) +
         stat_qq(size = 1.8, alpha = 0.8) + stat_qq_line(colour = "black", linewidth = pt_to_mm(1.2)) +
         labs(x = "Theoretical quantiles", y = "Sample quantiles", tag = "A") +
-        pub_colour() + theme_publication() + theme_panel_tag()
+        pub_colour() + thm() + tagthm()
       if (is.null(grp)) p <- p + guides(colour = "none")
       return(p)
     }
@@ -986,7 +1035,7 @@ server <- function(input, output, session) {
       geom_density(aes(colour = if (!is.null(grp)) .data[[grp]] else NULL), linewidth = pt_to_mm(1.2)) +
       labs(x = v, y = "Density", tag = "A") + pub_colour() + four_side_x() +
       locked_axis("y", c(0, max(dens_max, hist_max)), n = 5, pad = 0.03) +
-      theme_publication() + theme_panel_tag()
+      thm() + tagthm()
     if (is.null(grp)) p <- p + guides(fill = "none", colour = "none")
     p })
   output$dist_plot <- renderPlot(dist_plot())
@@ -1015,6 +1064,67 @@ server <- function(input, output, session) {
     else { newnames <- paste0(input$tr_vars, "_", input$tr_method); df[newnames] <- tr }
     rv$data <- df
     showNotification(sprintf("Applied %s transformation to %d column(s).", input$tr_method, ncol(m)), type = "message") })
+
+  # --- PCA Explorer -------------------------------------------------------
+  output$pca_vars_ui <- renderUI(checkboxGroupInput("pca_vars", "Variables",
+                                   choices = numeric_vars(), selected = numeric_vars()))
+  pca_model <- reactive({ req(input$pca_vars, rv$data)
+    vars <- intersect(input$pca_vars, names(rv$data)); if (length(vars) < 2) return(NULL)
+    df <- rv$data; m <- df[, vars, drop = FALSE]; keep <- stats::complete.cases(m); m <- m[keep, , drop = FALSE]
+    m <- m[, vapply(m, function(z) stats::sd(z) > 0, logical(1)), drop = FALSE]
+    if (ncol(m) < 2) return(NULL)
+    grp <- if (nzchar(input$pca_group %||% "")) factor(df[[input$pca_group]][keep]) else NULL
+    pc <- stats::prcomp(m, scale. = isTRUE(input$pca_scale))
+    list(pc = pc, ve = pc$sdev^2 / sum(pc$sdev^2) * 100, grp = grp) })
+  output$pca_notes <- renderUI({ mo <- pca_model()
+    if (is.null(mo)) return(note("Select at least 2 numeric variables with variation.", "warn"))
+    note(sprintf("PC1 and PC2 capture <b>%.1f%%</b> of the total variation. In the biplot, points are samples and arrows are variables: arrows pointing the same way are positively correlated, opposite ways negatively, and longer arrows load more strongly. The scree plot shows how many components are worth keeping (look for the 'elbow').", mo$ve[1] + mo$ve[2]), "info") })
+  pca_plot <- reactive({ mo <- pca_model(); req(mo)
+    if (input$pca_fig == "scree") {
+      k <- min(10, length(mo$ve))
+      d <- data.frame(idx = seq_len(k), PC = paste0("PC", seq_len(k)),
+                      ve = mo$ve[seq_len(k)], cum = cumsum(mo$ve)[seq_len(k)])
+      ggplot(d, aes(idx, ve)) +
+        geom_col(fill = "#0072B2", colour = "black", linewidth = pt_to_mm(0.6), width = 0.7) +
+        geom_line(aes(y = cum), colour = "#D55E00", linewidth = pt_to_mm(1.4)) +
+        geom_point(aes(y = cum), colour = "#D55E00", size = 2.4) +
+        scale_x_continuous(breaks = d$idx, labels = d$PC, expand = expansion(add = 0.6),
+                           sec.axis = dup_axis(name = NULL, labels = NULL)) +
+        labs(x = NULL, y = "Variance explained (%)", tag = "A") +
+        locked_axis("y", c(0, 100), n = 6) + thm() + tagthm()
+    } else {
+      sc <- as.data.frame(mo$pc$x[, 1:2]); names(sc) <- c("PC1", "PC2")
+      sc$grp <- mo$grp %||% factor("All")
+      ld <- as.data.frame(mo$pc$rotation[, 1:2]); names(ld) <- c("PC1", "PC2"); ld$var <- rownames(ld)
+      mult <- 0.8 * min(max(abs(sc$PC1)) / max(abs(ld$PC1)), max(abs(sc$PC2)) / max(abs(ld$PC2)))
+      ld$x <- ld$PC1 * mult; ld$y <- ld$PC2 * mult
+      ld <- head(ld[order(-(ld$PC1^2 + ld$PC2^2)), ], input$pca_arrows)
+      p <- ggplot(sc, aes(PC1, PC2)) +
+        geom_hline(yintercept = 0, colour = "grey80", linewidth = pt_to_mm(0.5)) +
+        geom_vline(xintercept = 0, colour = "grey80", linewidth = pt_to_mm(0.5)) +
+        geom_point(aes(colour = grp), size = 2.4, alpha = 0.85) + pub_colour(input$pca_group)
+      xr <- range(sc$PC1); yr <- range(sc$PC2)
+      if (nrow(ld) > 0 && input$pca_arrows > 0) {
+        p <- p + geom_segment(data = ld, aes(x = 0, y = 0, xend = x, yend = y),
+                   arrow = grid::arrow(length = grid::unit(6, "pt")), colour = "black", linewidth = pt_to_mm(0.9))
+        if (has_pkg("ggrepel")) p <- p + ggrepel::geom_text_repel(data = ld, aes(x = x, y = y, label = var),
+                   family = pfont(), size = 3.4, colour = "black", max.overlaps = 50)
+        xr <- range(c(sc$PC1, ld$x)); yr <- range(c(sc$PC2, ld$y))
+      }
+      p <- p + labs(x = sprintf("PC1 (%.1f%%)", mo$ve[1]), y = sprintf("PC2 (%.1f%%)", mo$ve[2]),
+                    tag = "A", colour = input$pca_group) +
+        locked_axis("x", xr, n = 6, pad = 0.05) + locked_axis("y", yr, n = 6, pad = 0.05) +
+        thm() + tagthm()
+      if (is.null(mo$grp)) p <- p + guides(colour = "none")
+      p
+    } })
+  output$pca_plot <- renderPlot(pca_plot())
+  output$pca_loadings <- renderDT({ mo <- pca_model(); req(mo)
+    k <- min(5, ncol(mo$pc$rotation))
+    ld <- round(as.data.frame(mo$pc$rotation[, seq_len(k), drop = FALSE]), 3)
+    ld <- cbind(Variable = rownames(ld), ld)
+    datatable(ld, options = list(scrollX = TRUE, pageLength = 15), rownames = FALSE) })
+  output$dl_pca <- dl_handler(function() paste0("pca_", input$pca_fig), pca_plot, width = 6.5, height = 5.5)
 
   # --- Choose a test ------------------------------------------------------
   output$guide_out <- renderUI({
@@ -1134,12 +1244,12 @@ server <- function(input, output, session) {
                    colour = "black", stroke = pt_to_mm(1.0)) +
       labs(x = input$gc_group, y = input$gc_response, tag = "A") + pub_colour() +
       locked_axis("y", yvals, n = 6, pad = 0.03) + guides(fill = "none") +
-      theme_publication() + theme_panel_tag()
+      thm() + tagthm()
     if (isTRUE(input$gc_signif) && nlevels(d$g) == 2 && has_pkg("ggsignif")) {
       pv <- tryCatch(gc_fit()$p.value, error = function(e) NA)
       if (!is.na(pv)) p <- p + ggsignif::geom_signif(comparisons = list(levels(d$g)),
         annotations = sprintf("p = %s  %s", ifelse(pv < 0.001, "<0.001", formatC(pv, format = "f", digits = 3)),
-                              p_to_stars(pv)), tip_length = 0.01, family = PUB_FONT, textsize = 4)
+                              p_to_stars(pv)), tip_length = 0.01, family = pfont(), textsize = 4)
     }
     p })
   output$gc_plot <- renderPlot(gc_plot())
@@ -1218,7 +1328,7 @@ server <- function(input, output, session) {
                    colour = "black", stroke = pt_to_mm(1.0)) +
       labs(x = input$av_group, y = input$av_response, tag = "A") + pub_colour() +
       locked_axis("y", yvals, n = 6, pad = 0.03) + guides(fill = "none") +
-      theme_publication() + theme_panel_tag()
+      thm() + tagthm()
     if (nsig > 0) {
       ph <- ph_sig
       if (!is.null(ph) && "p_adj" %in% names(ph)) {
@@ -1226,7 +1336,7 @@ server <- function(input, output, session) {
         if (nrow(sig)) { comps <- strsplit(sig$Comparison, " ?- ?")
           p <- p + ggsignif::geom_signif(comparisons = comps,
             annotations = p_to_stars(sig$p_adj), step_increase = 0.08,
-            tip_length = 0.01, family = PUB_FONT, textsize = 5) }
+            tip_length = 0.01, family = pfont(), textsize = 5) }
       }
     }
     p })
@@ -1269,7 +1379,7 @@ server <- function(input, output, session) {
         geom_point(size = 2.6) +
         labs(x = input$tw_f1, y = paste("Mean", input$tw_response), colour = input$tw_f2, tag = "A")
     }
-    p + pub_colour() + theme_publication() + theme_panel_tag() })
+    p + pub_colour() + thm() + tagthm() })
   output$tw_plot <- renderPlot(tw_plot())
   output$dl_tw <- dl_handler("twoway", tw_plot)
 
@@ -1295,7 +1405,7 @@ server <- function(input, output, session) {
     ggplot(dd, aes(Row, n, fill = Col)) +
       geom_col(position = "dodge", colour = "black", linewidth = pt_to_mm(0.6)) +
       labs(x = input$ct_row, y = "Count", fill = input$ct_col, tag = "A") + pub_colour() +
-      locked_axis("y", c(0, dd$n), n = 6) + theme_publication() + theme_panel_tag() })
+      locked_axis("y", c(0, dd$n), n = 6) + thm() + tagthm() })
   output$ct_plot <- renderPlot(ct_plot())
   output$dl_ct <- dl_handler("contingency", ct_plot)
 
@@ -1359,10 +1469,10 @@ server <- function(input, output, session) {
       geom_abline(slope = 1, intercept = 0, colour = "grey70", linewidth = pt_to_mm(1.0)) +
       geom_path(colour = "#0072B2", linewidth = pt_to_mm(1.6)) +
       annotate("text", x = 0.62, y = 0.12, label = sprintf("AUC = %.3f", auc),
-               family = PUB_FONT, size = 5, hjust = 0) +
+               family = pfont(), size = 5, hjust = 0) +
       labs(x = "False positive rate (1 - specificity)", y = "True positive rate (sensitivity)", tag = "A") +
       locked_axis("x", c(0, 1), n = 5) + locked_axis("y", c(0, 1), n = 5) +
-      coord_fixed() + theme_publication() + theme_panel_tag() })
+      coord_fixed() + thm() + tagthm() })
   output$dx_plot <- renderPlot(dx_plot())
   output$dl_roc <- dl_handler("roc", dx_plot, 6, 6)
 
@@ -1394,14 +1504,14 @@ server <- function(input, output, session) {
         geom_smooth(method = "lm", colour = "#D55E00", fill = "#D55E00", alpha = 0.15, linewidth = pt_to_mm(1.4)) +
         labs(x = input$reg_x, y = input$reg_y, tag = "A") +
         locked_axis("x", d$x, n = 6, pad = 0.03) + locked_axis("y", d$y, n = 6, pad = 0.03) +
-        theme_publication() + theme_panel_tag()
+        thm() + tagthm()
     } else {
       d <- data.frame(fitted = stats::fitted(fit), resid = stats::resid(fit))
       ggplot(d, aes(fitted, resid)) + geom_hline(yintercept = 0, colour = "grey70", linewidth = pt_to_mm(1.0)) +
         geom_point(size = 2, alpha = 0.75, colour = "#0072B2") +
         labs(x = "Fitted values", y = "Residuals", tag = "A") +
         locked_axis("x", d$fitted, n = 6, pad = 0.03) + locked_axis("y", d$resid, n = 6, pad = 0.03) +
-        theme_publication() + theme_panel_tag()
+        thm() + tagthm()
     } })
   output$reg_plot <- renderPlot(reg_plot())
   output$dl_reg <- dl_handler("regression", reg_plot)
@@ -1432,10 +1542,10 @@ server <- function(input, output, session) {
       geom_line(data = grid, aes(x, p), colour = "#D55E00", linewidth = pt_to_mm(1.6)) +
       labs(x = input$logit_x, y = paste("P(", input$logit_y, ")"), tag = "A") +
       locked_axis("x", d$x, n = 6, pad = 0.03) + locked_axis("y", c(0, 1), n = 5) +
-      theme_publication() + theme_panel_tag() })
+      thm() + tagthm() })
   output$logit_plot <- renderPlot({ tryCatch(logit_plot(), error = function(e)
     ggplot() + annotate("text", 0, 0, label = "Probability curve shown for a single numeric predictor.",
-                        family = PUB_FONT, size = 5) + theme_void()) })
+                        family = pfont(), size = 5) + theme_void()) })
   output$dl_logit <- dl_handler("logistic", logit_plot)
 
   # --- Poisson GLM --------------------------------------------------------
@@ -1488,10 +1598,10 @@ server <- function(input, output, session) {
   cor_plot <- reactive({ cr <- cor_result(); req(cr)
     long <- as.data.frame(as.table(cr$r)); names(long) <- c("V1", "V2", "r"); long$lab <- sprintf("%.2f", long$r)
     ggplot(long, aes(V1, V2, fill = r)) + geom_tile(colour = "black", linewidth = pt_to_mm(0.6)) +
-      geom_text(aes(label = lab), family = PUB_FONT, size = 3.6) +
+      geom_text(aes(label = lab), family = pfont(), size = 3.6) +
       scale_fill_gradient2(low = "#D55E00", mid = "white", high = "#0072B2", midpoint = 0, limits = c(-1, 1), name = "r") +
       labs(x = NULL, y = NULL, tag = "A") + coord_fixed() +
-      theme_publication() + theme_panel_tag() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) })
+      thm() + tagthm() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) })
   output$cor_plot <- renderPlot(cor_plot())
   output$dl_cor <- dl_handler("correlation", cor_plot, 6.5, 6)
 
@@ -1528,7 +1638,7 @@ server <- function(input, output, session) {
     ggplot(df, aes(time, surv, colour = grp)) + geom_step(linewidth = pt_to_mm(1.6)) +
       labs(x = "Time", y = "Survival probability", colour = input$surv_group, tag = "A") + pub_colour() +
       locked_axis("x", c(0, df$time), n = 6) + locked_axis("y", c(0, 1), n = 5) +
-      theme_publication() + theme_panel_tag() +
+      thm() + tagthm() +
       (if (nlevels(surv_data()$grp) < 2) guides(colour = "none") else NULL) })
   output$surv_plot <- renderPlot({ if (!surv_ok()) return(NULL); surv_plot() })
   output$dl_surv <- dl_handler("survival", surv_plot)
@@ -1558,11 +1668,11 @@ server <- function(input, output, session) {
       stat_summary(fun = mean, geom = "point", shape = 23, size = 3.2, fill = "white", colour = "black", stroke = pt_to_mm(1.0)) +
       labs(x = input$div_group, y = idx, tag = "A") + pub_colour() +
       locked_axis("y", t[[idx]], n = 6, pad = 0.03) + guides(fill = "none") +
-      theme_publication() + theme_panel_tag() })
+      thm() + tagthm() })
   output$div_plot <- renderPlot({ t <- div_table()
     if (is.null(t) || !"Group" %in% names(t))
       return(ggplot() + annotate("text", 0, 0, label = "Choose a grouping factor to compare diversity across groups.",
-                                 family = PUB_FONT, size = 5) + theme_void())
+                                 family = pfont(), size = 5) + theme_void())
     div_plot() })
   output$dl_div <- dl_handler(function() paste0("diversity_", input$div_index), div_plot)
 
@@ -1657,27 +1767,32 @@ server <- function(input, output, session) {
       geom_point(size = 2.6, alpha = 0.85) +
       labs(x = xlab, y = ylab, tag = "A", colour = input$ord_group, fill = input$ord_group) + pub_colour() +
       locked_axis("x", d$Dim1, n = 6, pad = 0.03) + locked_axis("y", d$Dim2, n = 6, pad = 0.03) +
-      theme_publication() + theme_panel_tag()
+      thm() + tagthm()
     if (nlevels(d$grp) > 1) p + stat_ellipse(type = "norm", linewidth = pt_to_mm(1.0), show.legend = FALSE)
     else p + guides(colour = "none", fill = "none") })
   output$ord_plot <- renderPlot(ord_plot())
   output$dl_ord <- dl_handler(function() paste0("ordination_", input$ord_method), ord_plot, 6.5, 6)
 
   # --- Bioinformatics: heatmap -------------------------------------------
-  output$hm_vars_ui <- renderUI(checkboxGroupInput("hm_vars", "Features (numeric columns)",
-                                  choices = numeric_vars(),
-                                  selected = grep("^Sp", numeric_vars(), value = TRUE) %||% numeric_vars()))
-  hm_input <- reactive({ req(input$hm_vars); if (length(input$hm_vars) < 2) return(NULL)
-    df <- rv$data; m <- df[, input$hm_vars, drop = FALSE]; keep <- stats::complete.cases(m)
+  pending_hm <- reactiveVal(NULL)   # feature set handed over from the volcano
+  output$hm_vars_ui <- renderUI({
+    sel <- intersect(pending_hm() %||% character(0), numeric_vars())
+    if (!length(sel)) sel <- grep("^Sp", numeric_vars(), value = TRUE) %||% numeric_vars()
+    checkboxGroupInput("hm_vars", "Features (numeric columns)", choices = numeric_vars(), selected = sel)
+  })
+  hm_input <- reactive({ req(input$hm_vars, rv$data)
+    vars <- intersect(input$hm_vars, names(rv$data)); if (length(vars) < 2) return(NULL)
+    df <- rv$data; m <- df[, vars, drop = FALSE]; keep <- stats::complete.cases(m)
     grp <- if (nzchar(input$hm_group %||% "")) df[[input$hm_group]][keep] else NULL
     list(m = m[keep, , drop = FALSE], grp = grp) })
   hm_plot <- reactive({ h <- hm_input(); req(h)
     heatmap_figure(h$m, group = h$grp, scale = input$hm_scale,
                    cluster_samples = isTRUE(input$hm_cluster_s),
                    cluster_features = isTRUE(input$hm_cluster_f),
-                   show_values = isTRUE(input$hm_values)) })
+                   show_values = isTRUE(input$hm_values),
+                   font = pfont(), base_size = psize(), tags = ptags()) })
   output$hm_plot <- renderPlot({ if (is.null(hm_input()))
-      return(ggplot() + annotate("text", 0, 0, label = "Select at least 2 feature columns.", family = PUB_FONT, size = 5) + theme_void())
+      return(ggplot() + annotate("text", 0, 0, label = "Select at least 2 feature columns.", family = pfont(), size = 5) + theme_void())
     hm_plot() })
   output$hm_notes <- renderUI(note("Rows are features, columns are samples. Z-scoring each feature (default) puts every variable on a common scale so colour reflects relative high/low, not absolute magnitude. Clustering groups similar samples/features together; the top dendrogram shows how samples relate. Orange = above average, blue = below.", "info"))
   output$dl_hm <- dl_handler("heatmap", hm_plot, width = 8, height = 6.5)
@@ -1686,11 +1801,13 @@ server <- function(input, output, session) {
   output$de_vars_ui <- renderUI(checkboxGroupInput("de_vars", "Features to test",
                                   choices = numeric_vars(),
                                   selected = grep("^Sp", numeric_vars(), value = TRUE) %||% numeric_vars()))
-  de_data <- reactive({ req(input$de_vars, input$de_group); length(input$de_vars) >= 1 || return(NULL)
-    df <- rv$data; cols <- c(input$de_vars, input$de_group)
+  de_data <- reactive({ req(input$de_vars, input$de_group, rv$data)
+    vars <- intersect(input$de_vars, names(rv$data))
+    req(length(vars) >= 1, input$de_group %in% names(rv$data))
+    df <- rv$data; cols <- c(vars, input$de_group)
     d <- df[stats::complete.cases(df[cols]), cols, drop = FALSE]
     g <- factor(d[[input$de_group]]); req(nlevels(g) == 2)
-    list(X = as.matrix(d[, input$de_vars, drop = FALSE]), g = g, lv = levels(g)) })
+    list(X = as.matrix(d[, vars, drop = FALSE]), g = g, lv = levels(g)) })
   de_res <- reactive({ dd <- de_data(); req(dd)
     r <- de_table(dd$X, dd$g, method = input$de_method)
     r$effect <- if (all(is.finite(r$log2FC))) r$log2FC else r$meanDiff
@@ -1698,6 +1815,9 @@ server <- function(input, output, session) {
     fc <- input$de_fc %||% 1; al <- input$de_alpha %||% 0.05
     r$Change <- ifelse(r$p_adj < al & r$effect >= fc, "Up",
                 ifelse(r$p_adj < al & r$effect <= -fc, "Down", "n.s."))
+    # Average expression for the MA plot (mean log intensity when positive).
+    r$A <- if (all(r$mean_1 > 0 & r$mean_2 > 0)) 0.5 * (log2(r$mean_1) + log2(r$mean_2))
+           else 0.5 * (r$mean_1 + r$mean_2)
     r })
   output$de_tbl <- renderDT({ r <- de_res(); req(r)
     tab <- r[order(r$p_adj), c("Feature", "mean_1", "mean_2", "log2FC", "meanDiff", "p", "p_adj", "Change")]
@@ -1716,34 +1836,58 @@ server <- function(input, output, session) {
     r$logp <- -log10(pmax(r$p_adj, .Machine$double.xmin))
     fc <- input$de_fc %||% 1; al <- input$de_alpha %||% 0.05
     cols <- c(Up = "#D55E00", Down = "#0072B2", "n.s." = "grey70")
-    # Pad the ranges so every point, threshold line, and repel label fits inside.
-    xr <- range(c(r$effect, -fc, fc)); xr <- xr + c(-1, 1) * 0.10 * diff(xr)
-    yr <- c(0, max(c(r$logp, -log10(al))) * 1.15)
-    p <- ggplot(r, aes(effect, logp, colour = Change)) +
-      geom_vline(xintercept = c(-fc, fc), linetype = "dashed", colour = "grey60", linewidth = pt_to_mm(0.8)) +
-      geom_hline(yintercept = -log10(al), linetype = "dashed", colour = "grey60", linewidth = pt_to_mm(0.8)) +
-      geom_point(size = 2, alpha = 0.8) +
-      scale_colour_manual(values = cols, name = NULL) +
-      labs(x = r$effect_name[1], y = expression(-log[10]~"adjusted p"), tag = "A") +
-      locked_axis("x", xr, n = 6) + locked_axis("y", yr, n = 6) +
-      theme_publication() + theme_panel_tag()
+    if ((input$de_plottype %||% "volcano") == "ma") {
+      r <- r[is.finite(r$A), ]
+      xr <- range(r$A) + c(-1, 1) * 0.05 * diff(range(r$A))
+      yr <- range(c(r$effect, -fc, fc)); yr <- yr + c(-1, 1) * 0.10 * diff(yr)
+      p <- ggplot(r, aes(A, effect, colour = Change)) +
+        geom_hline(yintercept = 0, colour = "grey70", linewidth = pt_to_mm(0.8)) +
+        geom_hline(yintercept = c(-fc, fc), linetype = "dashed", colour = "grey60", linewidth = pt_to_mm(0.8)) +
+        geom_point(size = 2, alpha = 0.8) + scale_colour_manual(values = cols, name = NULL) +
+        labs(x = "Average expression (A)", y = sprintf("%s (M)", r$effect_name[1]), tag = "A") +
+        locked_axis("x", xr, n = 6) + locked_axis("y", yr, n = 6) + thm() + tagthm()
+      lab_aes <- aes(A, effect, label = Feature)
+    } else {
+      xr <- range(c(r$effect, -fc, fc)); xr <- xr + c(-1, 1) * 0.10 * diff(xr)
+      yr <- c(0, max(c(r$logp, -log10(al))) * 1.15)
+      p <- ggplot(r, aes(effect, logp, colour = Change)) +
+        geom_vline(xintercept = c(-fc, fc), linetype = "dashed", colour = "grey60", linewidth = pt_to_mm(0.8)) +
+        geom_hline(yintercept = -log10(al), linetype = "dashed", colour = "grey60", linewidth = pt_to_mm(0.8)) +
+        geom_point(size = 2, alpha = 0.8) + scale_colour_manual(values = cols, name = NULL) +
+        labs(x = r$effect_name[1], y = expression(-log[10]~"adjusted p"), tag = "A") +
+        locked_axis("x", xr, n = 6) + locked_axis("y", yr, n = 6) + thm() + tagthm()
+      lab_aes <- aes(effect, logp, label = Feature)
+    }
     nlab <- input$de_label %||% 0
     if (nlab > 0 && has_pkg("ggrepel")) { top <- r[r$Change != "n.s.", ]
       top <- head(top[order(top$p_adj), ], nlab)
-      if (nrow(top)) p <- p + ggrepel::geom_text_repel(data = top, aes(label = Feature),
-        family = PUB_FONT, size = 3.4, colour = "black", max.overlaps = 50, min.segment.length = 0) }
+      if (nrow(top)) p <- p + ggrepel::geom_text_repel(data = top, mapping = lab_aes,
+        family = pfont(), size = 3.4, colour = "black", max.overlaps = 50, min.segment.length = 0) }
     p })
   output$de_plot <- renderPlot(de_plot())
-  output$dl_volcano <- dl_handler("volcano", de_plot, width = 6.5, height = 5.5)
+  output$dl_volcano <- dl_handler(function() paste0("de_", input$de_plottype %||% "volcano"),
+                                  de_plot, width = 6.5, height = 5.5)
   output$dl_de_csv <- downloadHandler(function() "differential_expression.csv",
     function(f) utils::write.csv(de_res()[order(de_res()$p_adj), ], f, row.names = FALSE))
+
+  # Frictionless handoff: push the significant features into the Heatmap tab.
+  observeEvent(input$de_to_heatmap, {
+    r <- tryCatch(de_res(), error = function(e) NULL); req(r)
+    sig <- r$Feature[r$Change != "n.s." & !is.na(r$Change)]
+    if (!length(sig)) { showNotification("No significant features to send yet.", type = "warning"); return() }
+    pending_hm(sig)
+    if (nzchar(input$de_group %||% "")) updateSelectInput(session, "hm_group", selected = input$de_group)
+    updateNavbarPage(session, "nav", selected = "Heatmap")
+    showNotification(sprintf("Sent %d significant feature(s) to the Heatmap tab.", length(sig)), type = "message")
+  })
 
   # --- Bioinformatics: sample clustering ---------------------------------
   output$cl_vars_ui <- renderUI(checkboxGroupInput("cl_vars", "Features (numeric columns)",
                                   choices = numeric_vars(),
                                   selected = grep("^Sp", numeric_vars(), value = TRUE) %||% numeric_vars()))
-  cl_data <- reactive({ req(input$cl_vars); length(input$cl_vars) >= 2 || return(NULL)
-    df <- rv$data; m <- df[, input$cl_vars, drop = FALSE]; keep <- stats::complete.cases(m); m <- m[keep, , drop = FALSE]
+  cl_data <- reactive({ req(input$cl_vars, rv$data)
+    vars <- intersect(input$cl_vars, names(rv$data)); if (length(vars) < 2) return(NULL)
+    df <- rv$data; m <- df[, vars, drop = FALSE]; keep <- stats::complete.cases(m); m <- m[keep, , drop = FALSE]
     grp <- if (nzchar(input$cl_group %||% "")) factor(df[[input$cl_group]][keep]) else NULL
     list(m = scale(as.matrix(m)), grp = grp,
          labels = (rownames(df)[keep]) %||% as.character(which(keep))) })
@@ -1758,12 +1902,12 @@ server <- function(input, output, session) {
       labs(x = NULL, y = "Height", tag = "A", colour = input$cl_group) + pub_colour() +
       scale_x_continuous(breaks = NULL, expand = expansion(mult = 0.02)) +
       locked_axis("y", c(0, max(dd$segments$y) * 1.05), n = 6) +
-      theme_publication() + theme_panel_tag() +
+      thm() + tagthm() +
       theme(axis.ticks.x = element_blank())
     if (is.null(cd$grp)) p <- p + guides(colour = "none")
     p })
   output$cl_plot <- renderPlot({ if (is.null(cl_data()))
-      return(ggplot() + annotate("text", 0, 0, label = "Select at least 2 feature columns.", family = PUB_FONT, size = 5) + theme_void())
+      return(ggplot() + annotate("text", 0, 0, label = "Select at least 2 feature columns.", family = pfont(), size = 5) + theme_void())
     cl_plot() })
   output$cl_notes <- renderUI(note("Samples are standardized, then grouped by similarity: samples joined lower in the tree are more alike. Colour the tips by a known group to see whether your samples cluster the way you expect. Ward or complete linkage give compact, interpretable clusters.", "info"))
   output$dl_cl <- dl_handler("clustering", cl_plot, width = 7, height = 5)
@@ -1782,7 +1926,7 @@ server <- function(input, output, session) {
       geom_point(size = 2.4, alpha = 0.85) +
       labs(x = xlab, y = ylab, tag = tag) + pub_colour() +
       locked_axis("x", d$Dim1, n = 5, pad = 0.03) + locked_axis("y", d$Dim2, n = 5, pad = 0.03) +
-      theme_publication() + theme_panel_tag()
+      thm() + tagthm()
     if (nlevels(d$grp) > 1) p <- p + stat_ellipse(type = "norm", linewidth = pt_to_mm(0.9), show.legend = FALSE)
     else p <- p + guides(colour = "none", fill = "none")
     p
@@ -1880,7 +2024,7 @@ server <- function(input, output, session) {
         stat_summary(fun = mean, geom = "point", shape = 23, size = 3.2, fill = "white", colour = "black", stroke = pt_to_mm(1.0)) +
         labs(x = input$cmp_g, y = input$cmp_y, tag = "A") + pub_colour() +
         locked_axis("y", d$y, n = 6, pad = 0.03) + guides(fill = "none") +
-        theme_publication() + theme_panel_tag()
+        thm() + tagthm()
       return(p) }
     req(input$cmp_x1, input$cmp_x2)
     d <- rv$data[, c(input$cmp_x1, input$cmp_x2)]; names(d) <- c("x", "y"); d <- d[stats::complete.cases(d), ]
@@ -1888,7 +2032,7 @@ server <- function(input, output, session) {
       geom_smooth(method = "lm", se = FALSE, colour = "#D55E00", linewidth = pt_to_mm(1.4)) +
       labs(x = input$cmp_x1, y = input$cmp_x2, tag = "A") +
       locked_axis("x", d$x, n = 6, pad = 0.03) + locked_axis("y", d$y, n = 6, pad = 0.03) +
-      theme_publication() + theme_panel_tag() })
+      thm() + tagthm() })
   output$cmp_plot <- renderPlot(cmp_plot())
   output$dl_cmp <- dl_handler(function() paste0("compare_", input$cmp_type), cmp_plot,
     width = function() if (input$cmp_type == "ord") 13 else 6.5, height = 5)
@@ -1929,7 +2073,7 @@ server <- function(input, output, session) {
       geom_line(colour = "#0072B2", linewidth = pt_to_mm(1.6)) +
       labs(x = "Sample size per group", y = "Power", tag = "A") +
       locked_axis("x", d$n, n = 6) + locked_axis("y", c(0, 1), n = 5) +
-      theme_publication() + theme_panel_tag() })
+      thm() + tagthm() })
   output$pwr_plot <- renderPlot({ if (!has_pkg("pwr")) return(NULL); pwr_plot() })
 }
 

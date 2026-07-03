@@ -65,17 +65,24 @@ regression.
 Pielou evenness), community comparison (PERMANOVA, ANOSIM, Mantel), and
 ordination (PCA, PCoA, CA, DCA, NMDS, RDA).
 
+**PCA Explorer** — a scree plot with cumulative variance (find the elbow) and a
+biplot with sample scores plus labelled variable-loading arrows, so students see
+*which variables* drive the separation, backed by a loadings table.
+
 **Bioinformatics** — a **clustered heatmap** (per-feature or per-sample
 z-scoring, sample dendrogram, group annotation bar, diverging colorblind-safe
-scale), a **differential-expression volcano plot** (per-feature t-test or
-Mann-Whitney with Benjamini-Hochberg correction, fold-change/significance
-thresholds, labelled hits, downloadable results table), and a **sample
-clustering dendrogram** (choice of distance and linkage, tips coloured by
-group).
+scale), a **differential-expression** module with switchable **volcano and MA
+plots** (per-feature t-test or Mann-Whitney with Benjamini-Hochberg correction,
+fold-change/significance thresholds, labelled hits, downloadable results) plus a
+one-click **"send significant features to the Heatmap"** handoff, and a **sample
+clustering dendrogram** (choice of distance and linkage, tips coloured by group).
 
-**Export** — one place to choose the file format for *every* Download-figure
-button: PNG or TIFF (raster, pick the dpi) or PDF/SVG (vector, razor-sharp and
-editable in Illustrator/Inkscape for manuscripts).
+**Export & Style** — one place to control *every* figure: pick a professional
+**font** (sans-serif, serif, Helvetica, Palatino, Times, Georgia), set the base
+text size, toggle panel labels, and choose the export format (PNG/TIFF raster
+with a dpi, or PDF/SVG vector — razor-sharp and editable in Illustrator/Inkscape)
+and size preset (single- or double-column journal widths). Changes preview live
+on every plot.
 
 **Power** — power / sample-size solving for t-tests, ANOVA, two proportions, and
 correlation, with a power-vs-n curve and effect-size conventions.
@@ -91,8 +98,10 @@ All figures pass through a single `theme_publication()` and export at 300 dpi:
   no gridlines.
 - Y-axes locked to labelled tick boundaries (≤ 3% breathing room only when data
   would collide with a spine).
-- Bold-letter panel labels in the top-left corner, no panel titles, no footer
-  notes, no N values in legends.
+- Bold-letter panel labels in the top-left corner (toggleable), no panel titles,
+  no footer notes, no N values in legends.
+- Font, base text size, and panel-label visibility are adjustable live from the
+  Export & Style tab and apply consistently across every figure.
 - Boxplots with jittered points, a diamond mean marker, suppressed outlier
   markers, and significance brackets drawn directly on the canvas.
 
