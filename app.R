@@ -25,6 +25,7 @@
 #   ggrepel      - Slowikowski K. Repulsive text labels for ggplot2.
 #   svglite      - Wickham H et al. An SVG graphics device.
 #   drc          - Ritz C et al. Dose-Response Analysis Using R. PLoS ONE 2015.
+#   ggvenn       - Yan L. Draw Venn Diagram by ggplot2.
 #   scales       - Wickham H, Seidel D. Scale functions for visualization.
 #   readxl       - Wickham H, Bryan J. Read Excel files.
 
@@ -281,7 +282,7 @@ de_table <- function(X, group, method = c("t", "wilcox")) {
 heatmap_figure <- function(X, group = NULL, scale = c("feature", "sample", "none"),
                            cluster_samples = TRUE, cluster_features = TRUE,
                            show_values = FALSE, row_dendro = TRUE,
-                           font = PUB_FONT, base_size = 13, tags = TRUE) {
+                           font = PUB_FONT, base_size = 13, tags = TRUE, legend = "right") {
   scale <- match.arg(scale)
   X <- as.matrix(X); storage.mode(X) <- "double"
   Xs <- switch(scale, feature = scale(X), sample = t(scale(t(X))), none = X)
@@ -310,7 +311,7 @@ heatmap_figure <- function(X, group = NULL, scale = c("feature", "sample", "none
     theme_publication(base_size = base_size, base_family = font) +
     (if (tags) theme_panel_tag(font) else theme(plot.tag = element_blank())) +
     theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 8),
-          axis.text.y = element_text(size = 8))
+          axis.text.y = element_text(size = 8), legend.position = legend)
   if (show_values) hm <- hm + geom_text(aes(label = sprintf("%.1f", value)),
                                         family = font, size = 2.4)
   if (!has_pkg("patchwork") || !has_pkg("ggdendro") || is.null(hc_s)) return(hm)
@@ -339,7 +340,7 @@ heatmap_figure <- function(X, group = NULL, scale = c("feature", "sample", "none
       scale_x_continuous(expand = c(0, 0), limits = c(0.5, n + 0.5)) +
       scale_y_continuous(expand = c(0, 0)) +
       labs(x = NULL, y = NULL) + theme_void() +
-      theme(legend.position = "right", legend.text = element_text(family = font),
+      theme(legend.position = legend, legend.text = element_text(family = font),
             legend.title = element_text(family = font))
   }
   lw <- 0.14  # left dendrogram column width fraction
@@ -688,6 +689,19 @@ ui <- navbarPage(
     )
   ),
 
+  tabPanel("Correlation Network",
+    sidebarLayout(
+      sidebarPanel(width = 3,
+        uiOutput("net_vars_ui"),
+        selectInput("net_method", "Method", c("Pearson" = "pearson", "Spearman" = "spearman")),
+        sliderInput("net_thresh", "Show edges with |r| ≥", min = 0.1, max = 0.95, value = 0.5, step = 0.05),
+        checkboxInput("net_size_deg", "Size nodes by number of links", TRUE),
+        downloadButton("dl_net", "Download figure")),
+      mainPanel(width = 9,
+        uiOutput("net_notes"), plotOutput("net_plot", height = "560px"))
+    )
+  ),
+
   # --- Survival -----------------------------------------------------------
   tabPanel("Survival",
     sidebarLayout(
@@ -743,10 +757,16 @@ ui <- navbarPage(
           uiOutput("ord_constrain_ui"),
           selectInput("nmds_dist", "NMDS distance", c("bray", "euclidean", "jaccard", "gower")),
           checkboxInput("ord_scale", "Scale variables (PCA)", TRUE),
+          tags$hr(),
+          checkboxInput("ord_envfit", "Overlay environmental fit (envfit)", FALSE),
+          conditionalPanel("input.ord_envfit", uiOutput("ord_env_ui")),
           downloadButton("dl_ord", "Download figure (300 dpi)")),
         mainPanel(width = 9,
           h4("Ordination summary"), uiOutput("ord_notes"), verbatimTextOutput("ord_summary"),
-          tags$hr(), plotOutput("ord_plot", height = "540px"))
+          tags$hr(), plotOutput("ord_plot", height = "540px"),
+          conditionalPanel("input.ord_envfit",
+            h4("Environmental fit (999 permutations)"), uiOutput("ord_envfit_notes"),
+            DTOutput("ord_envfit_tbl")))
       )
     )
   ),
@@ -800,6 +820,21 @@ ui <- navbarPage(
           downloadButton("dl_cl", "Download figure")),
         mainPanel(width = 9,
           uiOutput("cl_notes"), plotOutput("cl_plot", height = "520px"))
+      )
+    ),
+    tabPanel("Venn Diagram",
+      sidebarLayout(
+        sidebarPanel(width = 3,
+          selectInput("venn_group", "Set / group variable", choices = NULL),
+          uiOutput("venn_feat_ui"),
+          radioButtons("venn_rule", "A feature belongs to a group when",
+            c("Group mean > threshold" = "mean",
+              "Detected in any sample (> threshold)" = "any",
+              "Majority of samples > threshold" = "prop")),
+          numericInput("venn_thresh", "Presence threshold", 0, step = 0.5),
+          downloadButton("dl_venn", "Download figure")),
+        mainPanel(width = 9,
+          uiOutput("venn_notes"), plotOutput("venn_plot", height = "520px"))
       )
     )
   ),
@@ -860,6 +895,9 @@ ui <- navbarPage(
             "Times New Roman" = "Times New Roman", "Georgia" = "Georgia"),
           selected = "sans"),
         sliderInput("fig_fontsize", "Base text size", min = 8, max = 20, value = 13, step = 1),
+        selectInput("fig_legend", "Legend position",
+          c("Right" = "right", "Left" = "left", "Top" = "top",
+            "Bottom" = "bottom", "Hidden" = "none")),
         checkboxInput("fig_tags", "Show panel labels (A, B, ...)", TRUE),
         note("Changes preview live on every figure in the app.", "info")),
       column(4,
@@ -915,11 +953,13 @@ server <- function(input, output, session) {
 
   # Live figure styling controlled from the Export tab; every plot reads these
   # so changes redraw immediately.
-  pfont  <- reactive(input$fig_font %||% "Georgia")
-  psize  <- reactive(as.numeric(input$fig_fontsize %||% 13))
-  ptags  <- reactive(isTRUE(input$fig_tags %||% TRUE))
-  thm    <- reactive(theme_publication(base_size = psize(), base_family = pfont()))
-  tagthm <- reactive(if (ptags()) theme_panel_tag(pfont()) else theme(plot.tag = element_blank()))
+  pfont   <- reactive(input$fig_font %||% "Georgia")
+  psize   <- reactive(as.numeric(input$fig_fontsize %||% 13))
+  ptags   <- reactive(isTRUE(input$fig_tags %||% TRUE))
+  plegend <- reactive(input$fig_legend %||% "right")
+  thm     <- reactive(theme_publication(base_size = psize(), base_family = pfont()) +
+                        theme(legend.position = plegend()))
+  tagthm  <- reactive(if (ptags()) theme_panel_tag(pfont()) else theme(plot.tag = element_blank()))
 
   observeEvent(input$file, {
     req(input$file)
@@ -1018,6 +1058,7 @@ server <- function(input, output, session) {
     upd("hm_group", c("None" = "", fv)); upd("de_group", fv, fv[1])
     upd("cl_group", c("None" = "", fv))
     upd("pca_group", c("None" = "", fv))
+    upd("venn_group", fv, fv[1])
   })
 
   # --- Data health --------------------------------------------------------
@@ -1731,6 +1772,51 @@ server <- function(input, output, session) {
   output$cor_plot <- renderPlot(cor_plot())
   output$dl_cor <- dl_handler("correlation", cor_plot, 6.5, 6)
 
+  # --- Correlation network ------------------------------------------------
+  output$net_vars_ui <- renderUI(checkboxGroupInput("net_vars", "Variables",
+                                   choices = numeric_vars(), selected = head(numeric_vars(), 10)))
+  net_cor <- reactive({ req(input$net_vars)
+    vars <- intersect(input$net_vars, names(rv$data)); if (length(vars) < 3) return(NULL)
+    m <- rv$data[, vars, drop = FALSE]; m <- m[stats::complete.cases(m), , drop = FALSE]
+    if (nrow(m) < 3) return(NULL)
+    stats::cor(m, method = input$net_method) })
+  output$net_notes <- renderUI({ R <- net_cor()
+    if (is.null(R)) return(note("Select at least 3 numeric variables. A correlation network draws a line between two variables when their correlation is strong; it reveals clusters of co-varying measurements at a glance.", "warn"))
+    ne <- sum(abs(R[upper.tri(R)]) >= input$net_thresh)
+    note(sprintf("Blue lines are positive correlations, orange negative; thicker = stronger. <b>%d</b> pair(s) exceed |r| = %.2f. Lower the threshold to see weaker links, raise it to keep only the strongest.", ne, input$net_thresh), "info") })
+  net_plot <- reactive({ R <- net_cor(); req(R)
+    vars <- colnames(R); k <- length(vars); thr <- input$net_thresh
+    ang <- seq(pi / 2, pi / 2 - 2 * pi, length.out = k + 1)[seq_len(k)]
+    nodes <- data.frame(id = seq_len(k), var = vars, x = cos(ang), y = sin(ang))
+    ed <- expand.grid(i = seq_len(k), j = seq_len(k)); ed <- ed[ed$i < ed$j, ]
+    ed$r <- mapply(function(i, j) R[i, j], ed$i, ed$j)
+    ed <- ed[abs(ed$r) >= thr & is.finite(ed$r), ]
+    deg <- as.integer(table(factor(c(ed$i, ed$j), levels = seq_len(k))))
+    nodes$deg <- deg
+    ns <- if (isTRUE(input$net_size_deg)) 4 + 2.2 * sqrt(nodes$deg) else 7
+    p <- ggplot()
+    if (nrow(ed) > 0) { ed$x <- nodes$x[ed$i]; ed$y <- nodes$y[ed$i]
+      ed$xend <- nodes$x[ed$j]; ed$yend <- nodes$y[ed$j]
+      ed$Sign <- ifelse(ed$r > 0, "Positive", "Negative")
+      p <- p + geom_segment(data = ed, aes(x = x, y = y, xend = xend, yend = yend,
+                 colour = Sign, linewidth = abs(r)), alpha = 0.7) }
+    p <- p +
+      geom_point(data = nodes, aes(x, y), size = ns, shape = 21, fill = "white",
+                 colour = "grey25", stroke = pt_to_mm(1.0)) +
+      geom_text(data = nodes, aes(x, y, label = var), family = pfont(), size = 3.3) +
+      scale_colour_manual(values = c(Positive = "#0072B2", Negative = "#D55E00"), name = NULL,
+                          drop = FALSE) +
+      scale_linewidth(range = c(0.3, 2.6), guide = "none") +
+      coord_equal(xlim = c(-1.35, 1.35), ylim = c(-1.35, 1.35), clip = "off") +
+      labs(tag = "A") +
+      theme_void(base_family = pfont()) + tagthm() +
+      theme(legend.position = plegend(), legend.text = element_text(family = pfont()))
+    p })
+  output$net_plot <- renderPlot({ if (is.null(net_cor()))
+      return(ggplot() + annotate("text", 0, 0, label = "Select at least 3 numeric variables.", family = pfont(), size = 5) + theme_void())
+    net_plot() })
+  output$dl_net <- dl_handler("correlation_network", net_plot, width = 6.5, height = 6)
+
   # --- Survival -----------------------------------------------------------
   surv_ok <- reactive(has_pkg("survival"))
   surv_data <- reactive({ req(input$surv_time, input$surv_status)
@@ -1836,7 +1922,14 @@ server <- function(input, output, session) {
   output$ord_group_ui <- renderUI(selectInput("ord_group", "Grouping (colour)", choices = c("None" = "", factor_vars())))
   output$ord_constrain_ui <- renderUI(if (input$ord_method == "rda")
     checkboxGroupInput("ord_constrain", "Constraining variables (RDA)", choices = numeric_vars()))
+  output$ord_env_ui <- renderUI(checkboxGroupInput("ord_env", "Environmental variables to fit",
+                                  choices = setdiff(names(rv$data), input$ord_vars)))
   output$ord_notes <- renderUI(note("Ordination compresses many variables into 2 axes so you can see structure. PCA/RDA suit continuous data; CA/DCA/NMDS suit species-abundance tables. Check the variance explained (or NMDS stress &lt; 0.2).", "info"))
+  output$ord_envfit_notes <- renderUI({ res <- ord_model(); req(res)
+    if (is.null(res$envfit)) return(note("Select one or more environmental variables to overlay. envfit projects each variable onto the ordination and permutes to test the fit.", "info"))
+    note("Arrows are continuous variables (direction = increasing gradient, length = strength of fit); labelled points are category centroids. R² is how well the variable aligns with the ordination; a small p-value means the alignment is unlikely by chance.", "info") })
+  output$ord_envfit_tbl <- renderDT({ res <- ord_model(); req(res, res$envfit)
+    datatable(res$envfit$table, options = list(dom = "t", scrollX = TRUE), rownames = FALSE) })
 
   ord_model <- reactive({ req(input$ord_vars); if (length(input$ord_vars) < 2) return(NULL)
     df <- rv$data; m <- df[, input$ord_vars, drop = FALSE]; keep <- stats::complete.cases(m); m <- m[keep, , drop = FALSE]
@@ -1866,7 +1959,34 @@ server <- function(input, output, session) {
         list(scores = sc, axes = c("RDA1", "RDA2"), ve = ve, obj = rd) }),
       error = function(e) list(error = conditionMessage(e)))
     if (!is.null(res$error)) return(res)
-    names(res$scores)[1:2] <- c("Dim1", "Dim2"); res$group <- grp; res$shape <- shp; res })
+    names(res$scores)[1:2] <- c("Dim1", "Dim2"); res$group <- grp; res$shape <- shp
+    # Optional environmental fit projected onto the two ordination axes.
+    res$envfit <- NULL
+    if (isTRUE(input$ord_envfit) && length(input$ord_env) > 0 && has_pkg("vegan")) {
+      env <- df[keep, input$ord_env, drop = FALSE]
+      scr <- as.matrix(res$scores[, c("Dim1", "Dim2")])
+      fit <- tryCatch(vegan::envfit(scr, env, permutations = 999, na.rm = TRUE), error = function(e) NULL)
+      if (!is.null(fit)) {
+        vec <- NULL; cen <- NULL; tab <- list()
+        if (!is.null(fit$vectors)) {
+          mul <- tryCatch(vegan::ordiArrowMul(fit, fill = 0.9), error = function(e) 1)
+          a <- as.data.frame(vegan::scores(fit, "vectors")) * mul
+          names(a) <- c("x", "y"); a$label <- rownames(a)
+          vec <- a
+          tab[[1]] <- data.frame(Variable = names(fit$vectors$r), Type = "vector",
+            R2 = round(fit$vectors$r, 3), p = signif(fit$vectors$pvals, 3))
+        }
+        if (!is.null(fit$factors)) {
+          cc <- as.data.frame(vegan::scores(fit, "factors")); names(cc) <- c("x", "y")
+          cc$label <- rownames(cc); cen <- cc
+          tab[[2]] <- data.frame(Variable = names(fit$factors$r), Type = "factor",
+            R2 = round(fit$factors$r, 3), p = signif(fit$factors$pvals, 3))
+        }
+        res$envfit <- list(vectors = vec, centroids = cen,
+                           table = do.call(rbind, tab))
+      }
+    }
+    res })
 
   output$ord_summary <- renderPrint({ res <- ord_model(); req(res)
     if (!is.null(res$error)) { cat("Error:", res$error, "\n"); return(invisible()) }
@@ -1895,12 +2015,30 @@ server <- function(input, output, session) {
       geom_point(aes(shape = shp), size = 2.6, alpha = 0.85) +
       pub_shape_scale(input$ord_shape) +
       labs(x = xlab, y = ylab, tag = "A", colour = input$ord_group, fill = input$ord_group) + pub_colour() +
-      locked_axis("x", d$Dim1, n = 6, pad = 0.03) + locked_axis("y", d$Dim2, n = 6, pad = 0.03) +
       thm() + tagthm()
     if (!has_shape) p <- p + guides(shape = "none")
     if (nlevels(d$grp) > 1) p <- p + stat_ellipse(type = "norm", linewidth = pt_to_mm(1.0), show.legend = FALSE)
     else p <- p + guides(colour = "none", fill = "none")
-    p })
+    ef <- res$envfit; xr <- range(d$Dim1); yr <- range(d$Dim2)
+    if (!is.null(ef)) {
+      if (!is.null(ef$vectors)) { v <- ef$vectors
+        p <- p + geom_segment(data = v, aes(x = 0, y = 0, xend = x, yend = y),
+                   arrow = grid::arrow(length = grid::unit(7, "pt")), colour = "black",
+                   linewidth = pt_to_mm(1.0), inherit.aes = FALSE)
+        p <- p + (if (has_pkg("ggrepel"))
+          ggrepel::geom_text_repel(data = v, aes(x = x, y = y, label = label), inherit.aes = FALSE,
+            family = pfont(), size = 3.4, colour = "black", fontface = "italic")
+          else geom_text(data = v, aes(x = x, y = y, label = label), inherit.aes = FALSE,
+            family = pfont(), size = 3.4, colour = "black", fontface = "italic"))
+        xr <- range(c(xr, v$x)); yr <- range(c(yr, v$y)) }
+      if (!is.null(ef$centroids)) { cc <- ef$centroids
+        p <- p + geom_point(data = cc, aes(x = x, y = y), shape = 4, size = 3, stroke = pt_to_mm(1.2),
+                   colour = "black", inherit.aes = FALSE) +
+          geom_text(data = cc, aes(x = x, y = y, label = label), inherit.aes = FALSE,
+                    family = pfont(), size = 3.4, colour = "black", vjust = -0.7)
+        xr <- range(c(xr, cc$x)); yr <- range(c(yr, cc$y)) }
+    }
+    p + locked_axis("x", xr, n = 6, pad = 0.05) + locked_axis("y", yr, n = 6, pad = 0.05) })
   output$ord_plot <- renderPlot(ord_plot())
   output$dl_ord <- dl_handler(function() paste0("ordination_", input$ord_method), ord_plot, 6.5, 6)
 
@@ -1922,7 +2060,7 @@ server <- function(input, output, session) {
                    cluster_features = isTRUE(input$hm_cluster_f),
                    show_values = isTRUE(input$hm_values),
                    row_dendro = isTRUE(input$hm_row_dendro),
-                   font = pfont(), base_size = psize(), tags = ptags()) })
+                   font = pfont(), base_size = psize(), tags = ptags(), legend = plegend()) })
   output$hm_plot <- renderPlot({ if (is.null(hm_input()))
       return(ggplot() + annotate("text", 0, 0, label = "Select at least 2 feature columns.", family = pfont(), size = 5) + theme_void())
     hm_plot() })
@@ -2043,6 +2181,39 @@ server <- function(input, output, session) {
     cl_plot() })
   output$cl_notes <- renderUI(note("Samples are standardized, then grouped by similarity: samples joined lower in the tree are more alike. Colour the tips by a known group to see whether your samples cluster the way you expect. Ward or complete linkage give compact, interpretable clusters.", "info"))
   output$dl_cl <- dl_handler("clustering", cl_plot, width = 7, height = 5)
+
+  # --- Venn diagram -------------------------------------------------------
+  output$venn_feat_ui <- renderUI(checkboxGroupInput("venn_feat", "Features to test for membership",
+                                    choices = numeric_vars(),
+                                    selected = grep("^Sp", numeric_vars(), value = TRUE) %||% numeric_vars()))
+  venn_sets <- reactive({ req(input$venn_group, input$venn_feat)
+    df <- rv$data; req(input$venn_group %in% names(df))
+    feats <- intersect(input$venn_feat, names(df)); req(length(feats) >= 1)
+    g <- factor(df[[input$venn_group]]); lv <- levels(g); thr <- input$venn_thresh %||% 0
+    present <- function(x) switch(input$venn_rule %||% "mean",
+      mean = mean(x, na.rm = TRUE) > thr,
+      any  = any(x > thr, na.rm = TRUE),
+      prop = mean(x > thr, na.rm = TRUE) > 0.5)
+    sets <- lapply(lv, function(l) { sub <- df[!is.na(g) & g == l, feats, drop = FALSE]
+      feats[vapply(feats, function(f) isTRUE(present(sub[[f]])), logical(1))] })
+    names(sets) <- lv; list(sets = sets, nlev = length(lv)) })
+  output$venn_notes <- renderUI({ s <- venn_sets(); req(s)
+    msgs <- list(note("Each circle is one group; a feature joins a group's circle when it meets the presence rule for that group. Overlap counts show how many features are shared. This answers questions like 'which species are unique to disturbed sites?' or 'which markers are shared across conditions?'", "info"))
+    if (s$nlev > 4) msgs <- c(msgs, list(note(sprintf("Your grouping has %d levels; a Venn diagram is only legible up to 4. Showing the first 4 levels — use the Heatmap or an UpSet-style view for more.", s$nlev), "warn")))
+    if (s$nlev < 2) msgs <- c(msgs, list(note("Choose a grouping variable with at least 2 levels.", "warn")))
+    tagList(msgs) })
+  venn_plot <- reactive({ s <- venn_sets(); req(s, s$nlev >= 2, has_pkg("ggvenn"))
+    ss <- s$sets[seq_len(min(4, s$nlev))]
+    ggvenn::ggvenn(ss, fill_color = wong_values(length(ss)), fill_alpha = 0.45,
+                   stroke_size = 0.5, set_name_size = 4.5, text_size = 3.8,
+                   show_percentage = FALSE) +
+      labs(tag = "A") +
+      theme(text = element_text(family = pfont())) + tagthm() })
+  output$venn_plot <- renderPlot({ s <- venn_sets()
+    if (is.null(s) || s$nlev < 2 || !has_pkg("ggvenn"))
+      return(ggplot() + annotate("text", 0, 0, label = "Pick a grouping variable (2-4 levels) and feature columns.", family = pfont(), size = 5) + theme_void())
+    venn_plot() })
+  output$dl_venn <- dl_handler("venn", venn_plot, width = 6, height = 5.5)
 
   # --- Compare methods ----------------------------------------------------
   output$cmp_ord_vars_ui <- renderUI(checkboxGroupInput("cmp_ord_vars", "Matrix variables",

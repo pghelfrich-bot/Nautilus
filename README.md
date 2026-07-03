@@ -65,7 +65,18 @@ regression.
 
 **Ecology** — diversity indices (richness, Shannon, Simpson, inverse Simpson,
 Pielou evenness), community comparison (PERMANOVA, ANOSIM, Mantel), and
-ordination (PCA, PCoA, CA, DCA, NMDS, RDA).
+ordination (PCA, PCoA, CA, DCA, NMDS, RDA) with an optional **envfit** overlay
+that projects environmental vectors and factor centroids onto the ordination
+with permutation significance.
+
+**Correlation network** — a circular-layout network where variables are nodes
+and strong correlations are edges (blue positive, orange negative, thicker =
+stronger), with an adjustable |r| threshold, to reveal clusters of co-varying
+measurements at a glance.
+
+**Venn diagrams** — 2–4 set Venn (ggvenn) of which features belong to each group
+under a chosen presence rule (group mean, any detection, or majority), for
+questions like "which species are unique to disturbed sites?".
 
 **PCA Explorer** — a scree plot with cumulative variance (find the elbow) and a
 biplot with sample scores plus labelled variable-loading arrows, so students see
@@ -86,10 +97,10 @@ clustering dendrogram** (choice of distance and linkage, tips coloured by group)
 
 **Export & Style** — one place to control *every* figure: pick a professional
 **font** (sans-serif, serif, Helvetica, Palatino, Times, Georgia), set the base
-text size, toggle panel labels, and choose the export format (PNG/TIFF raster
-with a dpi, or PDF/SVG vector — razor-sharp and editable in Illustrator/Inkscape)
-and size preset (single- or double-column journal widths). Changes preview live
-on every plot.
+text size, **move the legend** (right/left/top/bottom/hidden), toggle panel
+labels, and choose the export format (PNG/TIFF raster with a dpi, or PDF/SVG
+vector — razor-sharp and editable in Illustrator/Inkscape) and size preset
+(single- or double-column journal widths). Changes preview live on every plot.
 
 **Power** — power / sample-size solving for t-tests, ANOVA, two proportions, and
 correlation, with a power-vs-n curve and effect-size conventions.
@@ -118,7 +129,7 @@ All figures pass through a single `theme_publication()` and export at 300 dpi:
 install.packages(c("shiny", "DT", "ggplot2", "dplyr", "tidyr", "scales",
                    "moments", "car", "FSA", "ppcor", "vegan", "survival",
                    "pwr", "drc", "ggsignif", "patchwork", "ggdendro", "ggrepel",
-                   "svglite", "readxl"))
+                   "ggvenn", "svglite", "readxl"))
 shiny::runApp("app.R")
 ```
 

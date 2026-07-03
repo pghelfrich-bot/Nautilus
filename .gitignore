@@ -4,3 +4,6 @@
 .Ruserdata
 *.Rproj
 rsconnect/
+
+# stray R graphics device output
+Rplots.pdf
