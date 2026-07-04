@@ -95,12 +95,14 @@ fold-change/significance thresholds, labelled hits, downloadable results) plus a
 one-click **"send significant features to the Heatmap"** handoff, and a **sample
 clustering dendrogram** (choice of distance and linkage, tips coloured by group).
 
-**Export & Style** — one place to control *every* figure: pick a professional
-**font** (sans-serif, serif, Helvetica, Palatino, Times, Georgia), set the base
-text size, **move the legend** (right/left/top/bottom/hidden), toggle panel
-labels, and choose the export format (PNG/TIFF raster with a dpi, or PDF/SVG
-vector — razor-sharp and editable in Illustrator/Inkscape) and size preset
-(single- or double-column journal widths). Changes preview live on every plot.
+**Export & Style** — one place to control *every* figure: **edit the text**
+(figure title, x/y-axis titles, legend title — blank keeps the built-in label),
+**reverse the legend order**, pick a professional **font** (sans-serif, serif,
+Helvetica, Palatino, Times, Georgia), set the base text size, **move the legend**
+(right/left/top/bottom/hidden), toggle panel labels, and choose the export format
+(PNG/TIFF raster with a dpi, or PDF/SVG vector — razor-sharp and editable in
+Illustrator/Inkscape) and size preset (single- or double-column journal widths).
+Everything previews live on the figure you are viewing and applies on download.
 
 **Power** — power / sample-size solving for t-tests, ANOVA, two proportions, and
 correlation, with a power-vs-n curve and effect-size conventions.

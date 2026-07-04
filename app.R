@@ -930,13 +930,20 @@ ui <- navbarPage(
           numericInput("fig_w", "Width (in)", 6.5, min = 1, max = 20, step = 0.5),
           numericInput("fig_h", "Height (in)", 5, min = 1, max = 20, step = 0.5))),
       column(4,
-        h4("Frictionless publication figures"),
-        note("1. Load or paste data, then open the analysis tab you need.", "ok"),
-        note("2. Every figure already follows publication conventions: Wong colorblind-safe palette, clean spines with inward ticks, tick-locked axes, lettered panels.", "ok"),
-        note("3. Set the font, size, format, and dimensions here once — they apply to every <b>Download figure</b> button. File names reflect the analysis so nothing is overwritten.", "ok"),
-        note("Vector <b>PDF</b>/<b>SVG</b> stay sharp at any size and open in Illustrator/Inkscape. <b>Single/Double column</b> presets match common journal widths while preserving each figure's aspect ratio.", "info"),
-        note("Sans-serif and Serif always render on any system. Named fonts (Helvetica, Palatino, ...) need that font installed, otherwise the graphics device substitutes the closest match.", "warn"))
-    )
+        h4("Labels (this figure)"),
+        textInput("lab_title", "Figure title", placeholder = "blank = none"),
+        textInput("lab_x", "X-axis title", placeholder = "blank = keep default"),
+        textInput("lab_y", "Y-axis title", placeholder = "blank = keep default"),
+        textInput("lab_legend", "Legend title", placeholder = "blank = keep default"),
+        checkboxInput("lab_legend_rev", "Reverse legend order", FALSE),
+        note("Type to rename any text on the figure; leave a box blank to keep the built-in label. These apply to whichever figure you are viewing, live and on download.", "info"))
+    ),
+    tags$hr(),
+    fluidRow(column(12,
+      h4("Frictionless publication figures"),
+      note("1. Load or paste data, then open the analysis tab you need. Every figure already follows publication conventions: Wong colorblind-safe palette, clean spines with inward major and minor ticks, frames that end on a labelled tick, lettered panels.", "ok"),
+      note("2. Rename titles, move the legend, pick a font, format (PDF/SVG stay sharp and edit in Illustrator/Inkscape) and a journal column-width preset here once — they apply to every <b>Download figure</b> button, and file names reflect the analysis so nothing is overwritten.", "ok"),
+      note("Sans-serif and Serif render on any system. Named fonts (Helvetica, Palatino, ...) need that font installed, otherwise the graphics device substitutes the closest match.", "warn")))
   )
 )
 
@@ -964,7 +971,7 @@ server <- function(input, output, session) {
         double = c(7,   h0 * 7   / w0),
         custom = c(input$fig_w %||% w0, input$fig_h %||% h0),
         c(w0, h0))
-      ggplot2::ggsave(file, plotFun(), width = dims[1], height = dims[2], units = "in",
+      ggplot2::ggsave(file, finalize(plotFun()), width = dims[1], height = dims[2], units = "in",
                       dpi = as.numeric(input$fig_dpi %||% 300), bg = "white", device = fmt)
     })
 
@@ -977,6 +984,30 @@ server <- function(input, output, session) {
   thm     <- reactive(theme_publication(base_size = psize(), base_family = pfont()) +
                         theme(legend.position = plegend()))
   tagthm  <- reactive(if (ptags()) theme_panel_tag(pfont()) else theme(plot.tag = element_blank()))
+
+  # Apply the user's editable text overrides (axis/legend titles, figure title,
+  # legend order) to any single-panel ggplot. Blank fields keep the built-in
+  # labels; multi-panel (patchwork) figures pass through untouched.
+  finalize <- function(p) {
+    if (inherits(p, "patchwork") || !inherits(p, "ggplot")) return(p)
+    xt <- input$lab_x %||% ""; yt <- input$lab_y %||% ""
+    lt <- input$lab_legend %||% ""; tt <- input$lab_title %||% ""
+    if (nzchar(xt)) p <- p + xlab(xt)
+    if (nzchar(yt)) p <- p + ylab(yt)
+    if (nzchar(tt)) p <- p + ggtitle(tt) +
+        theme(plot.title = element_text(family = pfont(), face = "bold",
+                                        size = psize() + 1, hjust = 0))
+    # Legend title/order: set through the guide (outranks a scale's own name)
+    # on colour/shape only, so a hidden legend (e.g. boxplot fill) is never
+    # re-enabled. labs(fill) covers fill legends that have no explicit name.
+    if (nzchar(lt)) p <- p + labs(fill = lt)
+    rev_set <- isTRUE(input$lab_legend_rev)
+    if (nzchar(lt) || rev_set) {
+      g <- guide_legend(title = if (nzchar(lt)) lt else waiver(), reverse = rev_set)
+      p <- p + guides(colour = g, shape = g)
+    }
+    p
+  }
 
   observeEvent(input$file, {
     req(input$file)
@@ -1181,7 +1212,7 @@ server <- function(input, output, session) {
       thm() + tagthm()
     if (is.null(grp)) p <- p + guides(fill = "none", colour = "none")
     p })
-  output$dist_plot <- renderPlot(dist_plot())
+  output$dist_plot <- renderPlot(finalize(dist_plot()))
   output$dl_dist <- dl_handler(function() paste0("distribution_", input$dist_var), dist_plot)
 
   # --- Transform / standardize -------------------------------------------
@@ -1265,7 +1296,7 @@ server <- function(input, output, session) {
       if (!has_shape) p <- p + guides(shape = "none")
       p
     } })
-  output$pca_plot <- renderPlot(pca_plot())
+  output$pca_plot <- renderPlot(finalize(pca_plot()))
   output$pca_loadings <- renderDT({ mo <- pca_model(); req(mo)
     k <- min(5, ncol(mo$pc$rotation))
     ld <- round(as.data.frame(mo$pc$rotation[, seq_len(k), drop = FALSE]), 3)
@@ -1399,7 +1430,7 @@ server <- function(input, output, session) {
                               p_to_stars(pv)), tip_length = 0.01, family = pfont(), textsize = 4)
     }
     p })
-  output$gc_plot <- renderPlot(gc_plot())
+  output$gc_plot <- renderPlot(finalize(gc_plot()))
   output$dl_box <- dl_handler(function() paste0("comparison_", input$gc_response), gc_plot)
 
   # --- 3+ group comparison ------------------------------------------------
@@ -1487,7 +1518,7 @@ server <- function(input, output, session) {
       }
     }
     p })
-  output$av_plot <- renderPlot(av_plot())
+  output$av_plot <- renderPlot(finalize(av_plot()))
   output$dl_avbox <- dl_handler(function() paste0("anova_", input$av_response), av_plot)
 
   # --- Two-way / ANCOVA ---------------------------------------------------
@@ -1527,7 +1558,7 @@ server <- function(input, output, session) {
         labs(x = input$tw_f1, y = paste("Mean", input$tw_response), colour = input$tw_f2, tag = "A")
     }
     p + pub_colour() + thm() + tagthm() })
-  output$tw_plot <- renderPlot(tw_plot())
+  output$tw_plot <- renderPlot(finalize(tw_plot()))
   output$dl_tw <- dl_handler("twoway", tw_plot)
 
   # --- Contingency --------------------------------------------------------
@@ -1553,7 +1584,7 @@ server <- function(input, output, session) {
       geom_col(position = "dodge", colour = "black", linewidth = pt_to_mm(0.6)) +
       labs(x = input$ct_row, y = "Count", fill = input$ct_col, tag = "A") + pub_colour() +
       locked_axis("y", c(0, dd$n), n = 6) + thm() + tagthm() })
-  output$ct_plot <- renderPlot(ct_plot())
+  output$ct_plot <- renderPlot(finalize(ct_plot()))
   output$dl_ct <- dl_handler("contingency", ct_plot)
 
   # --- Risk & odds --------------------------------------------------------
@@ -1620,7 +1651,7 @@ server <- function(input, output, session) {
       labs(x = "False positive rate (1 - specificity)", y = "True positive rate (sensitivity)", tag = "A") +
       locked_axis("x", c(0, 1), n = 5) + locked_axis("y", c(0, 1), n = 5) +
       coord_fixed() + thm() + tagthm() })
-  output$dx_plot <- renderPlot(dx_plot())
+  output$dx_plot <- renderPlot(finalize(dx_plot()))
   output$dl_roc <- dl_handler("roc", dx_plot, 6, 6)
 
   # --- Linear regression --------------------------------------------------
@@ -1660,7 +1691,7 @@ server <- function(input, output, session) {
         locked_axis("x", d$fitted, n = 6, pad = 0.03) + locked_axis("y", d$resid, n = 6, pad = 0.03) +
         thm() + tagthm()
     } })
-  output$reg_plot <- renderPlot(reg_plot())
+  output$reg_plot <- renderPlot(finalize(reg_plot()))
   output$dl_reg <- dl_handler("regression", reg_plot)
 
   # --- Logistic regression ------------------------------------------------
@@ -1690,9 +1721,9 @@ server <- function(input, output, session) {
       labs(x = input$logit_x, y = paste("P(", input$logit_y, ")"), tag = "A") +
       locked_axis("x", d$x, n = 6, pad = 0.03) + locked_axis("y", c(0, 1), n = 5) +
       thm() + tagthm() })
-  output$logit_plot <- renderPlot({ tryCatch(logit_plot(), error = function(e)
+  output$logit_plot <- renderPlot({ finalize(tryCatch(logit_plot(), error = function(e)
     ggplot() + annotate("text", 0, 0, label = "Probability curve shown for a single numeric predictor.",
-                        family = pfont(), size = 5) + theme_void()) })
+                        family = pfont(), size = 5) + theme_void())) })
   output$dl_logit <- dl_handler("logistic", logit_plot)
 
   # --- Poisson GLM --------------------------------------------------------
@@ -1744,7 +1775,7 @@ server <- function(input, output, session) {
   output$dr_plot <- renderPlot({ f <- dr_fit()
     if (is.null(f) || !is.null(f$error))
       return(ggplot() + annotate("text", 0, 0, label = "Choose a dose and response; a fittable sigmoid is needed.", family = pfont(), size = 5) + theme_void())
-    dr_plot() })
+    finalize(dr_plot()) })
   output$dr_tbl <- renderDT({ f <- dr_fit(); req(f); is.null(f$error) || return(NULL)
     t <- f$partab; t[-1] <- lapply(t[-1], function(z) signif(as.numeric(z), 4))
     names(t) <- c("Group", "EC50", "EC50 lower", "EC50 upper", "Hill slope", "Lower plateau", "Upper plateau")
@@ -1786,7 +1817,7 @@ server <- function(input, output, session) {
       scale_fill_gradient2(low = "#D55E00", mid = "white", high = "#0072B2", midpoint = 0, limits = c(-1, 1), name = "r") +
       labs(x = NULL, y = NULL, tag = "A") + coord_fixed() +
       thm() + tagthm() + theme(axis.text.x = element_text(angle = 45, hjust = 1)) })
-  output$cor_plot <- renderPlot(cor_plot())
+  output$cor_plot <- renderPlot(finalize(cor_plot()))
   output$dl_cor <- dl_handler("correlation", cor_plot, 6.5, 6)
 
   # --- Correlation network ------------------------------------------------
@@ -1831,7 +1862,7 @@ server <- function(input, output, session) {
     p })
   output$net_plot <- renderPlot({ if (is.null(net_cor()))
       return(ggplot() + annotate("text", 0, 0, label = "Select at least 3 numeric variables.", family = pfont(), size = 5) + theme_void())
-    net_plot() })
+    finalize(net_plot()) })
   output$dl_net <- dl_handler("correlation_network", net_plot, width = 6.5, height = 6)
 
   # --- Survival -----------------------------------------------------------
@@ -1869,7 +1900,7 @@ server <- function(input, output, session) {
       locked_axis("x", c(0, df$time), n = 6) + locked_axis("y", c(0, 1), n = 5) +
       thm() + tagthm() +
       (if (nlevels(surv_data()$grp) < 2) guides(colour = "none") else NULL) })
-  output$surv_plot <- renderPlot({ if (!surv_ok()) return(NULL); surv_plot() })
+  output$surv_plot <- renderPlot({ if (!surv_ok()) return(NULL); finalize(surv_plot()) })
   output$dl_surv <- dl_handler("survival", surv_plot)
 
   # --- Diversity ----------------------------------------------------------
@@ -1902,7 +1933,7 @@ server <- function(input, output, session) {
     if (is.null(t) || !"Group" %in% names(t))
       return(ggplot() + annotate("text", 0, 0, label = "Choose a grouping factor to compare diversity across groups.",
                                  family = pfont(), size = 5) + theme_void())
-    div_plot() })
+    finalize(div_plot()) })
   output$dl_div <- dl_handler(function() paste0("diversity_", input$div_index), div_plot)
 
   # --- Community comparison ----------------------------------------------
@@ -2056,7 +2087,7 @@ server <- function(input, output, session) {
         xr <- range(c(xr, cc$x)); yr <- range(c(yr, cc$y)) }
     }
     p + locked_axis("x", xr, n = 6, pad = 0.05) + locked_axis("y", yr, n = 6, pad = 0.05) })
-  output$ord_plot <- renderPlot(ord_plot())
+  output$ord_plot <- renderPlot(finalize(ord_plot()))
   output$dl_ord <- dl_handler(function() paste0("ordination_", input$ord_method), ord_plot, 6.5, 6)
 
   # --- Bioinformatics: heatmap -------------------------------------------
@@ -2080,7 +2111,7 @@ server <- function(input, output, session) {
                    font = pfont(), base_size = psize(), tags = ptags(), legend = plegend()) })
   output$hm_plot <- renderPlot({ if (is.null(hm_input()))
       return(ggplot() + annotate("text", 0, 0, label = "Select at least 2 feature columns.", family = pfont(), size = 5) + theme_void())
-    hm_plot() })
+    finalize(hm_plot()) })
   output$hm_notes <- renderUI(note("Rows are features, columns are samples. Z-scoring each feature (default) puts every variable on a common scale so colour reflects relative high/low, not absolute magnitude. Clustering groups similar samples/features together; the top dendrogram shows how samples relate. Orange = above average, blue = below.", "info"))
   output$dl_hm <- dl_handler("heatmap", hm_plot, width = 8, height = 6.5)
 
@@ -2151,7 +2182,7 @@ server <- function(input, output, session) {
       if (nrow(top)) p <- p + ggrepel::geom_text_repel(data = top, mapping = lab_aes,
         family = pfont(), size = 3.4, colour = "black", max.overlaps = 50, min.segment.length = 0) }
     p })
-  output$de_plot <- renderPlot(de_plot())
+  output$de_plot <- renderPlot(finalize(de_plot()))
   output$dl_volcano <- dl_handler(function() paste0("de_", input$de_plottype %||% "volcano"),
                                   de_plot, width = 6.5, height = 5.5)
   output$dl_de_csv <- downloadHandler(function() "differential_expression.csv",
@@ -2195,7 +2226,7 @@ server <- function(input, output, session) {
     p })
   output$cl_plot <- renderPlot({ if (is.null(cl_data()))
       return(ggplot() + annotate("text", 0, 0, label = "Select at least 2 feature columns.", family = pfont(), size = 5) + theme_void())
-    cl_plot() })
+    finalize(cl_plot()) })
   output$cl_notes <- renderUI(note("Samples are standardized, then grouped by similarity: samples joined lower in the tree are more alike. Colour the tips by a known group to see whether your samples cluster the way you expect. Ward or complete linkage give compact, interpretable clusters.", "info"))
   output$dl_cl <- dl_handler("clustering", cl_plot, width = 7, height = 5)
 
@@ -2229,7 +2260,7 @@ server <- function(input, output, session) {
   output$venn_plot <- renderPlot({ s <- venn_sets()
     if (is.null(s) || s$nlev < 2 || !has_pkg("ggvenn"))
       return(ggplot() + annotate("text", 0, 0, label = "Pick a grouping variable (2-4 levels) and feature columns.", family = pfont(), size = 5) + theme_void())
-    venn_plot() })
+    finalize(venn_plot()) })
   output$dl_venn <- dl_handler("venn", venn_plot, width = 6, height = 5.5)
 
   # --- Compare methods ----------------------------------------------------
@@ -2357,7 +2388,7 @@ server <- function(input, output, session) {
       labs(x = input$cmp_x1, y = input$cmp_x2, tag = "A") +
       locked_axis("x", d$x, n = 6, pad = 0.03) + locked_axis("y", d$y, n = 6, pad = 0.03) +
       thm() + tagthm() })
-  output$cmp_plot <- renderPlot(cmp_plot())
+  output$cmp_plot <- renderPlot(finalize(cmp_plot()))
   output$dl_cmp <- dl_handler(function() paste0("compare_", input$cmp_type), cmp_plot,
     width = function() if (input$cmp_type == "ord") 13 else 6.5, height = 5)
 
@@ -2398,7 +2429,7 @@ server <- function(input, output, session) {
       labs(x = "Sample size per group", y = "Power", tag = "A") +
       locked_axis("x", d$n, n = 6) + locked_axis("y", c(0, 1), n = 5) +
       thm() + tagthm() })
-  output$pwr_plot <- renderPlot({ if (!has_pkg("pwr")) return(NULL); pwr_plot() })
+  output$pwr_plot <- renderPlot({ if (!has_pkg("pwr")) return(NULL); finalize(pwr_plot()) })
 }
 
 shinyApp(ui, server)
